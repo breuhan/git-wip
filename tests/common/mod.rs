@@ -41,6 +41,10 @@ impl Env {
         let d = format!("@{} +0000", 1_700_000_000 + date);
         vec![
             ("HOME".into(), self.root.join("home").display().to_string()),
+            (
+                "XDG_STATE_HOME".into(),
+                self.root.join("home/.local/state").display().to_string(),
+            ),
             ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
             ("GIT_AUTHOR_NAME".into(), "t".into()),
             ("GIT_AUTHOR_EMAIL".into(), "t@t".into()),
@@ -103,6 +107,19 @@ impl Env {
             ],
         );
         (!out.is_empty()).then_some(out)
+    }
+
+    /// Repos registered by `git wip enable`.
+    pub fn repos(&self) -> Vec<String> {
+        let file = self.root.join("home/.local/state/git-wip/repos");
+        if !file.exists() {
+            return vec![];
+        }
+        let out = self.git(
+            &self.root,
+            &["config", "--file", file.to_str().unwrap(), "--get-all", "wip.repo"],
+        );
+        out.lines().map(str::to_string).collect()
     }
 
     pub fn read(&self, dir: &Path, file: &str) -> String {

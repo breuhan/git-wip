@@ -1,13 +1,25 @@
 use crate::git::{Git, Result};
 
+/// Enabled repos, kept out of the global git config because that is often read-only (home-manager).
+fn repos_file() -> Result<String> {
+    let dir = std::env::var("XDG_STATE_HOME")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.local/state")))
+        .map_err(|_| "neither XDG_STATE_HOME nor HOME is set")?
+        + "/git-wip";
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{dir}: {e}"))?;
+    Ok(dir + "/repos")
+}
+
+fn repos(g: &Git) -> Result<String> {
+    Ok(g.run(&["config", "--file", &repos_file()?, "--get-all", "wip.repo"])
+        .unwrap_or_default())
+}
+
 pub fn enable(g: &Git, remote: &str) -> Result<()> {
     let top = g.run(&["rev-parse", "--show-toplevel"])?;
     g.run(&["config", "wip.remote", remote])?;
-    let repos = g
-        .run(&["config", "--global", "--get-all", "wip.repo"])
-        .unwrap_or_default();
-    if !repos.lines().any(|l| l == top) {
-        g.run(&["config", "--global", "--add", "wip.repo", &top])?;
+    if !repos(g)?.lines().any(|l| l == top) {
+        g.run(&["config", "--file", &repos_file()?, "--add", "wip.repo", &top])?;
     }
     Ok(())
 }
@@ -15,7 +27,15 @@ pub fn enable(g: &Git, remote: &str) -> Result<()> {
 pub fn disable(g: &Git) -> Result<()> {
     let top = g.run(&["rev-parse", "--show-toplevel"])?;
     let _ = g.run(&["config", "--unset", "wip.remote"]);
-    let _ = g.run(&["config", "--global", "--fixed-value", "--unset-all", "wip.repo", &top]);
+    let _ = g.run(&[
+        "config",
+        "--file",
+        &repos_file()?,
+        "--fixed-value",
+        "--unset-all",
+        "wip.repo",
+        &top,
+    ]);
     Ok(())
 }
 
@@ -290,10 +310,7 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool) -> Result<()> {
 }
 
 pub fn save_all() -> Result<()> {
-    let repos = Git::new(".")
-        .run(&["config", "--global", "--get-all", "wip.repo"])
-        .unwrap_or_default();
-    for dir in repos.lines() {
+    for dir in repos(&Git::new("."))?.lines() {
         let g = Git::new(dir);
         let result = save(&g).and_then(|()| remote(&g).map_or(Ok(()), |r| fetch(&g, &r)));
         if let Err(e) = result {
