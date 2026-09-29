@@ -1,46 +1,85 @@
 mod common;
-use common::{eventually, Env};
+use common::{eventually, Env, Watch};
+
+fn snapshot_file(env: &Env, file: &str) -> Option<String> {
+    let oid = env.remote_ref("refs/wip/a")?;
+    Some(env.git(&env.a, &["show", &format!("{oid}:{file}")]))
+}
+
+fn watching(env: &Env, host: &str, date: i64) -> Watch {
+    let watch = env.watch(host, date);
+    eventually("watcher to start", || watch.log().contains("watching"));
+    watch
+}
 
 #[test]
 fn saves_after_a_file_change() {
     let env = Env::new();
     env.unregister(&env.b);
-    let watch = env.watch("a", 100);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    let before = env.remote_ref("refs/wip/a");
+    let watch = watching(&env, "a", 100);
     std::fs::write(env.a.join("file.txt"), "edited\n").unwrap();
     eventually("snapshot with the edit", || {
-        env.remote_ref("refs/wip/a")
-            .filter(|oid| Some(oid) != before.as_ref())
-            .is_some_and(|oid| env.git(&env.a, &["show", &format!("{oid}:file.txt")]) == "edited")
+        snapshot_file(&env, "file.txt").as_deref() == Some("edited")
     });
-    let log = watch.log();
-    assert!(!log.contains("error"), "{log}");
+    assert!(!watch.log().contains("error"), "{}", watch.log());
 }
 
 #[test]
-fn restores_a_foreign_snapshot_in_the_background() {
+fn fetches_but_leaves_restoring_to_the_prompt() {
     let env = Env::new();
     env.unregister(&env.a);
     std::fs::write(env.a.join("file.txt"), "from a\n").unwrap();
     env.wip_ok(&env.a, "a", 100, &["save"]);
-    let watch = env.watch("b", 200);
-    eventually("background restore", || watch.log().contains("restored state from a"));
-    assert_eq!(env.read(&env.b, "file.txt"), "from a\n");
+    let _watch = watching(&env, "b", 200);
+    eventually("fetch", || {
+        !env.git(&env.b, &["for-each-ref", "refs/wip-remotes/origin/a"])
+            .is_empty()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(env.read(&env.b, "file.txt"), "one\n");
+    let msg = env.wip_ok(&env.b, "b", 300, &["restore", "--prompt"]);
+    assert!(msg.contains("restored state from a"), "{msg}");
 }
 
 #[test]
-fn blocked_restore_is_reported_once() {
+fn ignored_writes_do_not_delay_saves() {
     let env = Env::new();
-    env.unregister(&env.a);
-    std::fs::write(env.a.join("file.txt"), "from a\n").unwrap();
-    env.wip_ok(&env.a, "a", 100, &["save"]);
-    std::fs::write(env.b.join("file.txt"), "local b\n").unwrap();
-    let watch = env.watch("b", 200);
-    std::thread::sleep(std::time::Duration::from_secs(4));
-    let log = watch.log();
-    assert_eq!(log.matches("a has newer changes").count(), 1, "{log}");
-    assert_eq!(env.read(&env.b, "file.txt"), "local b\n");
+    env.unregister(&env.b);
+    std::fs::write(env.a.join(".gitignore"), "busy.log\n").unwrap();
+    let _watch = watching(&env, "a", 100);
+    let log = env.a.join("busy.log");
+    let writer = std::thread::spawn(move || {
+        for i in 0..40 {
+            std::fs::write(&log, format!("{i}\n")).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
+    std::fs::write(env.a.join("file.txt"), "edited\n").unwrap();
+    let start = std::time::Instant::now();
+    eventually("snapshot while ignored file keeps changing", || {
+        snapshot_file(&env, "file.txt").as_deref() == Some("edited")
+    });
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(3),
+        "{:?}",
+        start.elapsed()
+    );
+    writer.join().unwrap();
+}
+
+#[test]
+fn retries_a_failed_push_without_new_edits() {
+    let env = Env::new();
+    env.unregister(&env.b);
+    env.git(&env.a, &["remote", "set-url", "origin", "/nonexistent/remote.git"]);
+    std::fs::write(env.a.join("file.txt"), "offline edit\n").unwrap();
+    let watch = watching(&env, "a", 100);
+    eventually("failed push", || watch.log().contains("nonexistent"));
+    let remote = env.remote.display().to_string();
+    env.git(&env.a, &["remote", "set-url", "origin", &remote]);
+    eventually("retried push", || {
+        snapshot_file(&env, "file.txt").as_deref() == Some("offline edit")
+    });
 }
 
 #[test]
@@ -48,13 +87,27 @@ fn picks_up_newly_enabled_repos() {
     let env = Env::new();
     env.unregister(&env.a);
     env.unregister(&env.b);
-    let _watch = env.watch("a", 100);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    let watch = env.watch("a", 100);
+    std::thread::sleep(std::time::Duration::from_millis(300));
     env.wip_ok(&env.a, "a", 100, &["enable", "origin"]);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    eventually("watching the new repo", || watch.log().contains("watching"));
     std::fs::write(env.a.join("file.txt"), "edited\n").unwrap();
     eventually("snapshot after enable", || {
-        env.remote_ref("refs/wip/a")
-            .is_some_and(|oid| env.git(&env.a, &["show", &format!("{oid}:file.txt")]) == "edited")
+        snapshot_file(&env, "file.txt").as_deref() == Some("edited")
+    });
+}
+
+#[test]
+fn rewatches_a_recloned_repo() {
+    let env = Env::new();
+    env.unregister(&env.b);
+    let watch = watching(&env, "a", 100);
+    std::fs::remove_dir_all(&env.a).unwrap();
+    env.git(&env.root, &["clone", "-q", "remote.git", "a"]);
+    env.git(&env.a, &["config", "wip.remote", "origin"]);
+    eventually("rewatch", || watch.log().matches("watching").count() >= 2);
+    std::fs::write(env.a.join("file.txt"), "after reclone\n").unwrap();
+    eventually("snapshot after reclone", || {
+        snapshot_file(&env, "file.txt").as_deref() == Some("after reclone")
     });
 }

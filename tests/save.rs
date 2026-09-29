@@ -105,15 +105,17 @@ fn offline_save_retries() {
 }
 
 #[test]
-fn save_skips_while_another_run_holds_the_lock() {
+fn explicit_save_waits_for_the_lock() {
     let env = Env::new();
     std::fs::write(env.a.join("file.txt"), "changed\n").unwrap();
     let lock = std::fs::File::create(env.a.join(".git/wip.lock")).unwrap();
     lock.try_lock().unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        drop(lock);
+    });
     env.wip_ok(&env.a, "a", 100, &["save"]);
-    assert_eq!(env.remote_ref("refs/wip/a"), None);
-    drop(lock);
-    env.wip_ok(&env.a, "a", 200, &["save"]);
+    release.join().unwrap();
     assert!(env.remote_ref("refs/wip/a").is_some());
 }
 

@@ -58,14 +58,21 @@ const BUSY: [&str; 6] = [
 
 fn host() -> String {
     std::env::var("GIT_WIP_HOST").unwrap_or_else(|_| {
-        let out = std::process::Command::new("hostname")
+        // macOS `hostname` can follow the network (DHCP); LocalHostName is the configured name.
+        let cmd: &[&str] = if cfg!(target_os = "macos") {
+            &["scutil", "--get", "LocalHostName"]
+        } else {
+            &["hostname"]
+        };
+        let out = std::process::Command::new(cmd[0])
+            .args(&cmd[1..])
             .output()
             .map(|o| o.stdout)
             .unwrap_or_default();
-        String::from_utf8_lossy(&out)
-            .trim()
-            .split('.')
+        let name = String::from_utf8_lossy(&out).trim().to_lowercase();
+        name.split('.')
             .next()
+            .filter(|n| !n.is_empty())
             .unwrap_or("unknown")
             .to_string()
     })
@@ -79,21 +86,26 @@ fn busy(g: &Git) -> Result<bool> {
     if !g.ok(&["symbolic-ref", "-q", "HEAD"]) || !g.ok(&["rev-parse", "-q", "--verify", "HEAD"]) {
         return Ok(true);
     }
-    let dirs = g.run(&["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"])?;
-    if dirs.lines().next() != dirs.lines().nth(1) {
+    let mut args = vec!["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"];
+    for p in BUSY {
+        args.extend(["--git-path", p]);
+    }
+    let out = g.run(&args)?;
+    let mut paths = out.lines();
+    if paths.next() != paths.next() {
         return Ok(true); // linked worktree: refs/wip/<host> is shared with the main one
     }
-    for p in BUSY {
-        if g.path(p)?.exists() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(paths.any(|p| std::path::Path::new(p).exists()))
 }
 
-/// Held for the whole save or restore so the timer and the cd hook never interleave.
-fn lock(g: &Git) -> Result<Option<std::fs::File>> {
+/// Held for the whole save or restore so the watcher, the prompt hook and manual commands never
+/// interleave. Background callers skip when it is taken; explicit commands wait.
+fn lock(g: &Git, wait: bool) -> Result<Option<std::fs::File>> {
     let f = std::fs::File::create(g.path("wip.lock")?).map_err(|e| e.to_string())?;
+    if wait {
+        f.lock().map_err(|e| e.to_string())?;
+        return Ok(Some(f));
+    }
     Ok(f.try_lock().is_ok().then_some(f))
 }
 
@@ -188,12 +200,12 @@ pub fn fetch(g: &Git, remote: &str) -> Result<()> {
     .map(|_| ())
 }
 
-pub fn save(g: &Git) -> Result<()> {
+pub fn save(g: &Git, wait: bool) -> Result<()> {
     let Some(remote) = remote(g) else { return Ok(()) };
     if busy(g)? {
         return Ok(());
     }
-    let Some(_lock) = lock(g)? else { return Ok(()) };
+    let Some(_lock) = lock(g, wait)? else { return Ok(()) };
     let snap = snapshot(g)?;
     let own = own_ref();
     if let Ok(old) = g.run(&["rev-parse", "-q", "--verify", &own]) {
@@ -284,8 +296,15 @@ fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
     if time <= commit_time(g, &own).max(commit_time(g, "HEAD")) {
         return Ok(Plan::UpToDate);
     }
+    // -uall: untracked files count even with status.showUntrackedFiles=no, or clean -fd deletes them.
+    let clean = g.run(&["status", "--porcelain", "--untracked-files=all"])?.is_empty();
+    if !force && !clean && notified(g)? == snap {
+        // Already refused; skip the snapshot below, which the prompt hook would otherwise redo each time.
+        let msg = format!("{from} has newer changes, run `git wip restore --force`");
+        return Ok(Plan::Blocked { msg, snap });
+    }
     let current = snapshot(g)?;
-    let untouched = g.run(&["status", "--porcelain"])?.is_empty()
+    let untouched = clean
         || g.run(&["rev-parse", "-q", "--verify", &own])
             .map_or(Ok(false), |o| same(g, &o, &current))?;
     let subject = g.run(&["log", "-1", "--format=%s", &snap])?;
@@ -330,22 +349,26 @@ fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
     })
 }
 
-/// Prints a refusal only once per foreign snapshot; the prompt hook and the watcher repeat restore often.
+/// The foreign snapshot a refusal was last printed for.
+fn notified(g: &Git) -> Result<String> {
+    Ok(std::fs::read_to_string(g.path("wip-notified")?).unwrap_or_default())
+}
+
+/// Prints a refusal only once per foreign snapshot, since the prompt hook runs restore at every prompt.
 fn notify_once(g: &Git, snap: &str, msg: &str) -> Result<()> {
-    let seen = g.path("wip-notified")?;
-    if std::fs::read_to_string(&seen).is_ok_and(|s| s == snap) {
+    if notified(g)? == snap {
         return Ok(());
     }
     eprintln!("wip: {msg}");
-    std::fs::write(&seen, snap).map_err(|e| e.to_string())
+    std::fs::write(g.path("wip-notified")?, snap).map_err(|e| e.to_string())
 }
 
-pub fn restore(g: &Git, force: bool, fetch_first: bool) -> Result<()> {
+pub fn restore(g: &Git, force: bool, fetch_first: bool, wait: bool) -> Result<()> {
     let Some(remote) = remote(g) else { return Ok(()) };
     if busy(g)? {
         return Ok(());
     }
-    let Some(_lock) = lock(g)? else { return Ok(()) };
+    let Some(_lock) = lock(g, wait)? else { return Ok(()) };
     if fetch_first {
         fetch(g, &remote)?;
     }
@@ -397,7 +420,8 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool) -> Result<()> {
         g.run(&["checkout", "-q", "-b", &branch, &base])?;
     }
     if has_changes(g, &snap)? {
-        g.run(&["stash", "apply", "--index", "-q", &snap])?;
+        g.run(&["stash", "apply", "--index", "-q", &snap])
+            .map_err(|e| format!("{e}\nprevious state in {backup}"))?;
     }
     g.run(&["update-ref", &own_ref(), &snap])?;
     eprintln!("wip: restored state from {from} (previous state in {backup})");
@@ -444,7 +468,7 @@ pub fn save_all() -> Result<()> {
     let mut failed = 0;
     for dir in repos(&Git::new("."))?.lines() {
         let g = Git::new(dir);
-        let result = save(&g).and_then(|()| remote(&g).map_or(Ok(()), |r| fetch(&g, &r)));
+        let result = save(&g, true).and_then(|()| remote(&g).map_or(Ok(()), |r| fetch(&g, &r)));
         if let Err(e) = result {
             eprintln!("wip: {dir}: {e}");
             failed += 1;

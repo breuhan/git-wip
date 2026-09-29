@@ -276,3 +276,56 @@ fn blocked_message_is_shown_once_per_snapshot() {
     assert!(first.contains("a has newer changes"), "{first}");
     assert!(second.is_empty(), "{second}");
 }
+
+#[test]
+fn untracked_files_hidden_by_config_count_as_changes() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    env.git(&env.b, &["config", "status.showUntrackedFiles", "no"]);
+    std::fs::write(env.b.join("notes.txt"), "precious\n").unwrap();
+    let msg = env.wip_ok(&env.b, "b", 200, &["restore"]);
+    assert!(msg.contains("a has newer changes"), "{msg}");
+    assert_eq!(env.read(&env.b, "notes.txt"), "precious\n");
+}
+
+#[test]
+fn explicit_restore_waits_for_the_lock() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    let lock = std::fs::File::create(env.b.join(".git/wip.lock")).unwrap();
+    lock.lock().unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        drop(lock);
+    });
+    let msg = env.wip_ok(&env.b, "b", 200, &["restore"]);
+    release.join().unwrap();
+    assert!(msg.contains("restored state from a"), "{msg}");
+}
+
+#[test]
+fn prompt_restore_skips_while_locked() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    env.wip_ok(&env.b, "b", 150, &["save-all"]);
+    let lock = std::fs::File::create(env.b.join(".git/wip.lock")).unwrap();
+    lock.lock().unwrap();
+    let msg = env.wip_ok(&env.b, "b", 200, &["restore", "--prompt"]);
+    assert!(msg.is_empty(), "{msg}");
+    assert_eq!(env.read(&env.b, "file.txt"), "one\n");
+    drop(lock);
+    env.wip_ok(&env.b, "b", 210, &["restore", "--prompt"]);
+    assert_eq!(env.read(&env.b, "file.txt"), "from a\n");
+}
+
+#[test]
+fn failed_apply_points_to_the_backup() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    std::fs::write(env.b.join(".git/info/exclude"), "new.txt\n").unwrap();
+    std::fs::write(env.b.join("new.txt"), "ignored locally\n").unwrap();
+    let out = env.wip(&env.b, "b", 200, &["restore"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("previous state in refs/wip-backup/b"), "{err}");
+}

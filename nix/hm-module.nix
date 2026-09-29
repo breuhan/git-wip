@@ -32,13 +32,13 @@ in
     lib.mkMerge [
       {
         home.packages = [ cfg.package ];
-        # Local only, so cheap enough for every prompt; shows restores done in the background.
+        # Restores only happen here, at a prompt the user sees; the watcher just saves and fetches.
         programs.zsh.initContent = ''
-          _git_wip() { git wip restore --no-fetch; }
+          _git_wip() { git wip restore --prompt; }
           autoload -Uz add-zsh-hook && add-zsh-hook precmd _git_wip
         '';
         programs.fish.interactiveShellInit = ''
-          function _git_wip --on-event fish_prompt; git wip restore --no-fetch; end
+          function _git_wip --on-event fish_prompt; git wip restore --prompt; end
         '';
       }
       (lib.mkIf pkgs.stdenv.isLinux {
