@@ -215,3 +215,53 @@ fn fetched_snapshots_survive_a_pruning_fetch() {
     env.wip_ok(&env.b, "b", 200, &["restore", "--no-fetch"]);
     assert_eq!(env.read(&env.b, "file.txt"), "from a\n");
 }
+
+fn a_commits_and_saves_clean(env: &Env) {
+    std::fs::write(env.a.join("file.txt"), "a commit\n").unwrap();
+    env.git_at(&env.a, 150, &["commit", "-q", "-am", "a"]);
+    env.wip_ok(&env.a, "a", 200, &["save"]);
+}
+
+#[test]
+fn clean_foreign_commits_fast_forward_under_local_changes() {
+    let env = Env::new();
+    a_commits_and_saves_clean(&env);
+    std::fs::write(env.b.join("notes.txt"), "b wip\n").unwrap();
+    let msg = env.wip_ok(&env.b, "b", 300, &["restore"]);
+    assert!(
+        msg.contains("fast-forwarded main to a's commits, local changes kept"),
+        "{msg}"
+    );
+    assert_eq!(
+        env.git(&env.b, &["rev-parse", "HEAD"]),
+        env.git(&env.a, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(env.read(&env.b, "notes.txt"), "b wip\n");
+    assert_eq!(env.read(&env.b, "file.txt"), "a commit\n");
+}
+
+#[test]
+fn fast_forward_refused_when_local_changes_conflict() {
+    let env = Env::new();
+    a_commits_and_saves_clean(&env);
+    std::fs::write(env.b.join("file.txt"), "b wip\n").unwrap();
+    let head = env.git(&env.b, &["rev-parse", "HEAD"]);
+    let msg = env.wip_ok(&env.b, "b", 300, &["restore"]);
+    assert!(
+        msg.contains("a has newer changes, run `git wip restore --force`"),
+        "{msg}"
+    );
+    assert_eq!(env.git(&env.b, &["rev-parse", "HEAD"]), head);
+    assert_eq!(env.read(&env.b, "file.txt"), "b wip\n");
+}
+
+#[test]
+fn fast_forward_is_quiet_on_the_next_cd() {
+    let env = Env::new();
+    env.wip_ok(&env.a, "a", 50, &["save"]);
+    a_commits_and_saves_clean(&env);
+    std::fs::write(env.b.join("notes.txt"), "b wip\n").unwrap();
+    env.wip_ok(&env.b, "b", 300, &["restore"]);
+    let msg = env.wip_ok(&env.b, "b", 310, &["restore", "--no-fetch"]);
+    assert!(msg.is_empty(), "{msg}");
+}

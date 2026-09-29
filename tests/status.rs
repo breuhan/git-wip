@@ -61,3 +61,14 @@ fn up_to_date_after_restore() {
     env.wip_ok(&env.b, "b", 200, &["restore", "--no-fetch"]);
     assert!(status(&env, &env.b, "b").ends_with("up to date\n"));
 }
+
+#[test]
+fn fast_forward_pending() {
+    let env = Env::new();
+    std::fs::write(env.a.join("file.txt"), "a commit\n").unwrap();
+    env.git_at(&env.a, 150, &["commit", "-q", "-am", "a"]);
+    env.wip_ok(&env.a, "a", 200, &["save"]);
+    env.wip_ok(&env.b, "b", 250, &["save-all"]);
+    std::fs::write(env.b.join("notes.txt"), "b wip\n").unwrap();
+    assert!(status(&env, &env.b, "b").ends_with("fast-forward pending from a, local changes kept\n"));
+}

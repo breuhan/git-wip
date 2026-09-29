@@ -250,6 +250,12 @@ fn branch_of(subject: &str) -> Option<&str> {
 enum Plan {
     UpToDate,
     Blocked(String),
+    /// The foreign host only has newer commits on our branch; like `git pull`, local changes stay.
+    FastForward {
+        from: String,
+        branch: String,
+        base: String,
+    },
     Ready {
         from: String,
         snap: String,
@@ -274,17 +280,26 @@ fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
     let untouched = g.run(&["status", "--porcelain"])?.is_empty()
         || g.run(&["rev-parse", "-q", "--verify", &own])
             .map_or(Ok(false), |o| same(g, &o, &current))?;
-    if !force && !untouched {
-        return Ok(Plan::Blocked(format!(
-            "{from} has newer changes, run `git wip restore --force`"
-        )));
-    }
-
     let subject = g.run(&["log", "-1", "--format=%s", &snap])?;
     let branch = branch_of(&subject)
         .ok_or(format!("unexpected snapshot message: {subject}"))?
         .to_string();
     let base = g.run(&["rev-parse", &format!("{snap}^1")])?;
+    if !force && !untouched {
+        let head = g.run(&["rev-parse", "HEAD"])?;
+        let on_branch = g.run(&["symbolic-ref", "--short", "HEAD"])? == branch;
+        if on_branch && !has_changes(g, &snap)? {
+            if is_ancestor(g, &base, &head) {
+                return Ok(Plan::UpToDate); // we already have its commits and it has no changes
+            }
+            if is_ancestor(g, &head, &base) {
+                return Ok(Plan::FastForward { from, branch, base });
+            }
+        }
+        return Ok(Plan::Blocked(format!(
+            "{from} has newer changes, run `git wip restore --force`"
+        )));
+    }
     let local = format!("refs/heads/{branch}");
     let exists = g.ok(&["rev-parse", "-q", "--verify", &local]);
     let behind = exists && is_ancestor(g, &local, &base);
@@ -317,6 +332,15 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool) -> Result<()> {
         Plan::UpToDate => return Ok(()),
         Plan::Blocked(msg) => {
             eprintln!("wip: {msg}");
+            return Ok(());
+        }
+        Plan::FastForward { from, branch, base } => {
+            // --ff-only refuses when the new commits touch locally changed files.
+            if g.run(&["merge", "--ff-only", "-q", &base]).is_ok() {
+                eprintln!("wip: fast-forwarded {branch} to {from}'s commits, local changes kept");
+            } else {
+                eprintln!("wip: {from} has newer changes, run `git wip restore --force`");
+            }
             return Ok(());
         }
         Plan::Ready {
@@ -388,6 +412,7 @@ pub fn status(g: &Git) -> Result<()> {
         Plan::UpToDate => println!("up to date"),
         Plan::Blocked(msg) => println!("{msg}"),
         Plan::Ready { from, .. } => println!("restore pending from {from}"),
+        Plan::FastForward { from, .. } => println!("fast-forward pending from {from}, local changes kept"),
     }
     Ok(())
 }

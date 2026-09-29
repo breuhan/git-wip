@@ -7,6 +7,8 @@ on protected branches, and `.git` is never file-synced.
 Each machine saves its working state as a git stash commit to `refs/wip/<host>`
 on a remote you choose. When you `cd` into the repo on another machine, the
 newest state is restored, but only if that machine has no changes of its own.
+If the other machine only has newer commits on your branch, the branch is
+fast-forwarded and your local changes stay, like `git pull`.
 The replaced state is kept in `refs/wip-backup/<host>`.
 
 ## Install (Nix + home-manager)
