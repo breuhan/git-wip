@@ -22,6 +22,7 @@ programs.git-wip.enable = true;
 
 ```sh
 git wip enable <remote>    # opt a repo in, on every machine
+git wip status             # snapshot per host and whether a restore is pending
 git wip restore --force    # take the newest state even with local changes
 ```
 

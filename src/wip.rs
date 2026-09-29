@@ -242,6 +242,67 @@ fn has_changes(g: &Git, snap: &str) -> Result<bool> {
     Ok(untracked || trees.lines().any(|t| t != base))
 }
 
+fn branch_of(subject: &str) -> Option<&str> {
+    subject.strip_prefix("WIP on ")?.split_once(": ").map(|(b, _)| b)
+}
+
+enum Plan {
+    UpToDate,
+    Blocked(String),
+    Ready {
+        from: String,
+        snap: String,
+        current: String,
+        branch: String,
+        base: String,
+        exists: bool,
+        behind: bool,
+    },
+}
+
+/// What `restore` would do with the refs fetched so far.
+fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
+    let own = own_ref();
+    let Some((time, snap, from)) = newest_foreign(g, remote)? else {
+        return Ok(Plan::UpToDate);
+    };
+    if time <= commit_time(g, &own).max(commit_time(g, "HEAD")) {
+        return Ok(Plan::UpToDate);
+    }
+    let current = snapshot(g)?;
+    let untouched = g.run(&["status", "--porcelain"])?.is_empty()
+        || g.run(&["rev-parse", "-q", "--verify", &own])
+            .map_or(Ok(false), |o| same(g, &o, &current))?;
+    if !force && !untouched {
+        return Ok(Plan::Blocked(format!(
+            "{from} has newer changes, run `git wip restore --force`"
+        )));
+    }
+
+    let subject = g.run(&["log", "-1", "--format=%s", &snap])?;
+    let branch = branch_of(&subject)
+        .ok_or(format!("unexpected snapshot message: {subject}"))?
+        .to_string();
+    let base = g.run(&["rev-parse", &format!("{snap}^1")])?;
+    let local = format!("refs/heads/{branch}");
+    let exists = g.ok(&["rev-parse", "-q", "--verify", &local]);
+    let behind = exists && is_ancestor(g, &local, &base);
+    if exists && !behind && !is_ancestor(g, &base, &local) {
+        return Ok(Plan::Blocked(format!(
+            "{branch} has diverged from {from}, not restoring"
+        )));
+    }
+    Ok(Plan::Ready {
+        from,
+        snap,
+        current,
+        branch,
+        base,
+        exists,
+        behind,
+    })
+}
+
 pub fn restore(g: &Git, force: bool, fetch_first: bool) -> Result<()> {
     let Some(remote) = remote(g) else { return Ok(()) };
     if busy(g)? {
@@ -251,36 +312,22 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool) -> Result<()> {
     if fetch_first {
         fetch(g, &remote)?;
     }
-    let own = own_ref();
-    let Some((time, snap, from)) = newest_foreign(g, &remote)? else {
-        return Ok(());
+    let (from, snap, current, branch, base, exists, behind) = match plan(g, &remote, force)? {
+        Plan::UpToDate => return Ok(()),
+        Plan::Blocked(msg) => {
+            eprintln!("wip: {msg}");
+            return Ok(());
+        }
+        Plan::Ready {
+            from,
+            snap,
+            current,
+            branch,
+            base,
+            exists,
+            behind,
+        } => (from, snap, current, branch, base, exists, behind),
     };
-    if time <= commit_time(g, &own).max(commit_time(g, "HEAD")) {
-        return Ok(());
-    }
-    let current = snapshot(g)?;
-    let untouched = g.run(&["status", "--porcelain"])?.is_empty()
-        || g.run(&["rev-parse", "-q", "--verify", &own])
-            .map_or(Ok(false), |o| same(g, &o, &current))?;
-    if !force && !untouched {
-        eprintln!("wip: {from} has newer changes, run `git wip restore --force`");
-        return Ok(());
-    }
-
-    let subject = g.run(&["log", "-1", "--format=%s", &snap])?;
-    let branch = subject
-        .strip_prefix("WIP on ")
-        .and_then(|s| s.split_once(": "))
-        .map(|(b, _)| b.to_string())
-        .ok_or(format!("unexpected snapshot message: {subject}"))?;
-    let base = g.run(&["rev-parse", &format!("{snap}^1")])?;
-    let local = format!("refs/heads/{branch}");
-    let exists = g.ok(&["rev-parse", "-q", "--verify", &local]);
-    let behind = exists && is_ancestor(g, &local, &base);
-    if exists && !behind && !is_ancestor(g, &base, &local) {
-        eprintln!("wip: {branch} has diverged from {from}, not restoring");
-        return Ok(());
-    }
 
     let backup = format!("refs/wip-backup/{}", host());
     g.run(&[
@@ -304,8 +351,43 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool) -> Result<()> {
     if has_changes(g, &snap)? {
         g.run(&["stash", "apply", "--index", "-q", &snap])?;
     }
-    g.run(&["update-ref", &own, &snap])?;
+    g.run(&["update-ref", &own_ref(), &snap])?;
     eprintln!("wip: restored state from {from} (previous state in {backup})");
+    Ok(())
+}
+
+/// Snapshots per host as of the last fetch, and what `restore` would do.
+pub fn status(g: &Git) -> Result<()> {
+    let Some(remote) = remote(g) else {
+        println!("not enabled, run `git wip enable <remote>`");
+        return Ok(());
+    };
+    println!("remote: {remote}");
+    let prefix = format!("refs/remotes/{remote}/wip/");
+    let me = host();
+    let refs = g.run(&[
+        "for-each-ref",
+        "--format=%(refname)%00%(committerdate:relative)%00%(subject)",
+        &prefix,
+    ])?;
+    for line in refs.lines() {
+        let mut it = line.split('\0');
+        let (Some(name), Some(date), Some(subject)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        let name = name.strip_prefix(&prefix).unwrap_or(name);
+        let mark = if name == me { " (this host)" } else { "" };
+        println!("{name:<12} {:<24} {date}{mark}", branch_of(subject).unwrap_or("?"));
+    }
+    if busy(g)? {
+        println!("busy (detached HEAD or an operation in progress), nothing is saved or restored");
+        return Ok(());
+    }
+    match plan(g, &remote, false)? {
+        Plan::UpToDate => println!("up to date"),
+        Plan::Blocked(msg) => println!("{msg}"),
+        Plan::Ready { from, .. } => println!("restore pending from {from}"),
+    }
     Ok(())
 }
 
