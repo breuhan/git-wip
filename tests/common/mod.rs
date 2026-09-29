@@ -122,6 +122,47 @@ impl Env {
         out.lines().map(str::to_string).collect()
     }
 
+    /// Removes `dir` from the repo list but keeps its `wip.remote`, so only one clone is watched.
+    pub fn unregister(&self, dir: &Path) {
+        let file = self.root.join("home/.local/state/git-wip/repos");
+        let top = self.git(dir, &["rev-parse", "--show-toplevel"]);
+        self.git(
+            &self.root,
+            &[
+                "config",
+                "--file",
+                file.to_str().unwrap(),
+                "--fixed-value",
+                "--unset-all",
+                "wip.repo",
+                &top,
+            ],
+        );
+    }
+
+    /// Starts `git wip watch` as `host` with short debounce and fetch intervals.
+    pub fn watch(&self, host: &str, date: i64) -> Watch {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_git-wip"))
+            .current_dir(&self.root)
+            .arg("watch")
+            .envs(self.envs(date))
+            .env("GIT_WIP_HOST", host)
+            .env("GIT_WIP_DEBOUNCE_MS", "300")
+            .env("GIT_WIP_FETCH_SECS", "1")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let (stderr, sink) = (child.stderr.take().unwrap(), log.clone());
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                sink.lock().unwrap().push_str(&(line + "\n"));
+            }
+        });
+        Watch { child, log }
+    }
+
     pub fn read(&self, dir: &Path, file: &str) -> String {
         std::fs::read_to_string(dir.join(file)).unwrap()
     }
@@ -131,4 +172,34 @@ impl Drop for Env {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+pub struct Watch {
+    child: std::process::Child,
+    log: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Watch {
+    /// What the watcher logged so far.
+    pub fn log(&self) -> String {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Polls `f` for up to 15 seconds.
+pub fn eventually(what: &str, f: impl Fn() -> bool) {
+    for _ in 0..150 {
+        if f() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("timed out waiting for {what}");
 }

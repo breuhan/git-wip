@@ -8,3 +8,6 @@ description = "Sync uncommitted git working state between machines via refs/wip/
 [[bin]]
 name = "git-wip"
 path = "src/main.rs"
+
+[dependencies]
+notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }

@@ -7,8 +7,12 @@ self:
 }:
 let
   cfg = config.programs.git-wip;
-  # The timer must use the user's git (config, credential helpers, ssh).
+  # The watcher must use the user's git (config, credential helpers, ssh).
   path = "${config.home.profileDirectory}/bin:/run/current-system/sw/bin:/usr/bin:/bin";
+  env = {
+    PATH = path;
+    GIT_WIP_FETCH_SECS = toString cfg.fetchInterval;
+  };
 in
 {
   options.programs.git-wip = {
@@ -17,10 +21,10 @@ in
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
     };
-    interval = lib.mkOption {
+    fetchInterval = lib.mkOption {
       type = lib.types.ints.positive;
-      default = 60;
-      description = "Seconds between `git wip save-all` runs.";
+      default = 30;
+      description = "Seconds between fetching and restoring other hosts' snapshots.";
     };
   };
 
@@ -28,30 +32,25 @@ in
     lib.mkMerge [
       {
         home.packages = [ cfg.package ];
+        # Local only, so cheap enough for every prompt; shows restores done in the background.
         programs.zsh.initContent = ''
           _git_wip() { git wip restore --no-fetch; }
-          autoload -Uz add-zsh-hook && add-zsh-hook chpwd _git_wip && _git_wip
+          autoload -Uz add-zsh-hook && add-zsh-hook precmd _git_wip
         '';
         programs.fish.interactiveShellInit = ''
-          function _git_wip --on-variable PWD; git wip restore --no-fetch; end
-          _git_wip
+          function _git_wip --on-event fish_prompt; git wip restore --no-fetch; end
         '';
       }
       (lib.mkIf pkgs.stdenv.isLinux {
         systemd.user.services.git-wip = {
-          Unit.Description = "git-wip save-all";
+          Unit.Description = "git-wip watch";
           Service = {
-            Type = "oneshot";
-            ExecStart = "${lib.getExe cfg.package} save-all";
-            Environment = [ "PATH=${path}" ];
+            ExecStart = "${lib.getExe cfg.package} watch";
+            Environment = lib.mapAttrsToList (k: v: "${k}=${v}") env;
+            Restart = "always";
+            RestartSec = 10;
           };
-        };
-        systemd.user.timers.git-wip = {
-          Timer = {
-            OnBootSec = "1min";
-            OnUnitActiveSec = "${toString cfg.interval}s";
-          };
-          Install.WantedBy = [ "timers.target" ];
+          Install.WantedBy = [ "default.target" ];
         };
       })
       (lib.mkIf pkgs.stdenv.isDarwin {
@@ -60,11 +59,12 @@ in
           config = {
             ProgramArguments = [
               (lib.getExe cfg.package)
-              "save-all"
+              "watch"
             ];
-            StartInterval = cfg.interval;
+            KeepAlive = true;
+            ThrottleInterval = 10;
             StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/git-wip.log";
-            EnvironmentVariables.PATH = path;
+            EnvironmentVariables = env;
           };
         };
       })

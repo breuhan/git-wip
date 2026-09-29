@@ -10,6 +10,10 @@ fn repos_file() -> Result<String> {
     Ok(dir + "/repos")
 }
 
+pub fn repo_list() -> Result<Vec<String>> {
+    Ok(repos(&Git::new("."))?.lines().map(str::to_string).collect())
+}
+
 fn repos(g: &Git) -> Result<String> {
     Ok(g.run(&["config", "--file", &repos_file()?, "--get-all", "wip.repo"])
         .unwrap_or_default())
@@ -39,7 +43,7 @@ pub fn disable(g: &Git) -> Result<()> {
     Ok(())
 }
 
-fn remote(g: &Git) -> Option<String> {
+pub fn remote(g: &Git) -> Option<String> {
     g.run(&["config", "--get", "wip.remote"]).ok()
 }
 
@@ -174,7 +178,7 @@ fn same(g: &Git, a: &str, b: &str) -> Result<bool> {
     Ok(state(g, a)? == state(g, b)?)
 }
 
-fn fetch(g: &Git, remote: &str) -> Result<()> {
+pub fn fetch(g: &Git, remote: &str) -> Result<()> {
     g.run(&[
         "fetch",
         "--quiet",
@@ -249,10 +253,14 @@ fn branch_of(subject: &str) -> Option<&str> {
 
 enum Plan {
     UpToDate,
-    Blocked(String),
+    Blocked {
+        msg: String,
+        snap: String,
+    },
     /// The foreign host only has newer commits on our branch; like `git pull`, local changes stay.
     FastForward {
         from: String,
+        snap: String,
         branch: String,
         base: String,
     },
@@ -293,20 +301,23 @@ fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
                 return Ok(Plan::UpToDate); // we already have its commits and it has no changes
             }
             if is_ancestor(g, &head, &base) {
-                return Ok(Plan::FastForward { from, branch, base });
+                return Ok(Plan::FastForward {
+                    from,
+                    snap,
+                    branch,
+                    base,
+                });
             }
         }
-        return Ok(Plan::Blocked(format!(
-            "{from} has newer changes, run `git wip restore --force`"
-        )));
+        let msg = format!("{from} has newer changes, run `git wip restore --force`");
+        return Ok(Plan::Blocked { msg, snap });
     }
     let local = format!("refs/heads/{branch}");
     let exists = g.ok(&["rev-parse", "-q", "--verify", &local]);
     let behind = exists && is_ancestor(g, &local, &base);
     if exists && !behind && !is_ancestor(g, &base, &local) {
-        return Ok(Plan::Blocked(format!(
-            "{branch} has diverged from {from}, not restoring"
-        )));
+        let msg = format!("{branch} has diverged from {from}, not restoring");
+        return Ok(Plan::Blocked { msg, snap });
     }
     Ok(Plan::Ready {
         from,
@@ -317,6 +328,16 @@ fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
         exists,
         behind,
     })
+}
+
+/// Prints a refusal only once per foreign snapshot; the prompt hook and the watcher repeat restore often.
+fn notify_once(g: &Git, snap: &str, msg: &str) -> Result<()> {
+    let seen = g.path("wip-notified")?;
+    if std::fs::read_to_string(&seen).is_ok_and(|s| s == snap) {
+        return Ok(());
+    }
+    eprintln!("wip: {msg}");
+    std::fs::write(&seen, snap).map_err(|e| e.to_string())
 }
 
 pub fn restore(g: &Git, force: bool, fetch_first: bool) -> Result<()> {
@@ -330,18 +351,20 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool) -> Result<()> {
     }
     let (from, snap, current, branch, base, exists, behind) = match plan(g, &remote, force)? {
         Plan::UpToDate => return Ok(()),
-        Plan::Blocked(msg) => {
-            eprintln!("wip: {msg}");
-            return Ok(());
-        }
-        Plan::FastForward { from, branch, base } => {
+        Plan::Blocked { msg, snap } => return notify_once(g, &snap, &msg),
+        Plan::FastForward {
+            from,
+            snap,
+            branch,
+            base,
+        } => {
             // --ff-only refuses when the new commits touch locally changed files.
             if g.run(&["merge", "--ff-only", "-q", &base]).is_ok() {
                 eprintln!("wip: fast-forwarded {branch} to {from}'s commits, local changes kept");
-            } else {
-                eprintln!("wip: {from} has newer changes, run `git wip restore --force`");
+                return Ok(());
             }
-            return Ok(());
+            let msg = format!("{from} has newer changes, run `git wip restore --force`");
+            return notify_once(g, &snap, &msg);
         }
         Plan::Ready {
             from,
@@ -410,7 +433,7 @@ pub fn status(g: &Git) -> Result<()> {
     }
     match plan(g, &remote, false)? {
         Plan::UpToDate => println!("up to date"),
-        Plan::Blocked(msg) => println!("{msg}"),
+        Plan::Blocked { msg, .. } => println!("{msg}"),
         Plan::Ready { from, .. } => println!("restore pending from {from}"),
         Plan::FastForward { from, .. } => println!("fast-forward pending from {from}, local changes kept"),
     }

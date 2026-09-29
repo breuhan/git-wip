@@ -1,10 +1,11 @@
 mod git;
+mod watch;
 mod wip;
 
 use std::process::ExitCode;
 
 const USAGE: &str =
-    "usage: git wip enable <remote> | disable | save | save-all | status | restore [--force] [--no-fetch]";
+    "usage: git wip enable <remote> | disable | save | save-all | status | watch | restore [--force] [--no-fetch]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -20,6 +21,7 @@ fn main() -> ExitCode {
         ["save"] => wip::save(&g),
         ["save-all"] => wip::save_all(),
         ["status"] => wip::status(&g),
+        ["watch"] => watch::watch(),
         ["restore", flags @ ..] => wip::restore(&g, flags.contains(&"--force"), !flags.contains(&"--no-fetch")),
         _ => Err(USAGE.to_string()),
     };

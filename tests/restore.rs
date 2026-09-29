@@ -265,3 +265,14 @@ fn fast_forward_is_quiet_on_the_next_cd() {
     let msg = env.wip_ok(&env.b, "b", 310, &["restore", "--no-fetch"]);
     assert!(msg.is_empty(), "{msg}");
 }
+
+#[test]
+fn blocked_message_is_shown_once_per_snapshot() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    std::fs::write(env.b.join("file.txt"), "local b\n").unwrap();
+    let first = env.wip_ok(&env.b, "b", 200, &["restore"]);
+    let second = env.wip_ok(&env.b, "b", 210, &["restore", "--no-fetch"]);
+    assert!(first.contains("a has newer changes"), "{first}");
+    assert!(second.is_empty(), "{second}");
+}
