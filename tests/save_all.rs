@@ -9,8 +9,8 @@ fn save_all_saves_and_fetches_every_registered_repo() {
     env.wip_ok(&env.root, "a", 100, &["save-all"]);
     assert!(env.remote_ref("refs/wip/a").is_some());
     assert!(env
-        .git(&env.a, &["for-each-ref", "refs/remotes/origin/wip/"])
-        .contains("wip/a"));
+        .git(&env.a, &["for-each-ref", "refs/wip-remotes/origin/"])
+        .contains("origin/a"));
 }
 
 #[test]

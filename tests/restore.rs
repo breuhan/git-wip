@@ -204,3 +204,14 @@ fn linked_worktree_is_skipped() {
     );
     assert_eq!(env.read(&wt, "file.txt"), "one\n");
 }
+
+#[test]
+fn fetched_snapshots_survive_a_pruning_fetch() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    env.wip_ok(&env.b, "b", 150, &["save-all"]);
+    env.git(&env.b, &["fetch", "-q", "--prune", "origin"]);
+    assert!(env.git(&env.b, &["branch", "-r"]).lines().all(|l| !l.contains("wip/")));
+    env.wip_ok(&env.b, "b", 200, &["restore", "--no-fetch"]);
+    assert_eq!(env.read(&env.b, "file.txt"), "from a\n");
+}

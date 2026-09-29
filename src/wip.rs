@@ -179,7 +179,7 @@ fn fetch(g: &Git, remote: &str) -> Result<()> {
         "fetch",
         "--quiet",
         remote,
-        &format!("+refs/wip/*:refs/remotes/{remote}/wip/*"),
+        &format!("+refs/wip/*:refs/wip-remotes/{remote}/*"),
     ])
     .map(|_| ())
 }
@@ -216,7 +216,7 @@ fn commit_time(g: &Git, rev: &str) -> i64 {
 
 /// (commit time, oid, host) of the newest snapshot fetched from another host.
 fn newest_foreign(g: &Git, remote: &str) -> Result<Option<(i64, String, String)>> {
-    let prefix = format!("refs/remotes/{remote}/wip/");
+    let prefix = format!("refs/wip-remotes/{remote}/");
     let me = host();
     let out = g.run(&[
         "for-each-ref",
@@ -363,7 +363,7 @@ pub fn status(g: &Git) -> Result<()> {
         return Ok(());
     };
     println!("remote: {remote}");
-    let prefix = format!("refs/remotes/{remote}/wip/");
+    let prefix = format!("refs/wip-remotes/{remote}/");
     let me = host();
     let refs = g.run(&[
         "for-each-ref",
