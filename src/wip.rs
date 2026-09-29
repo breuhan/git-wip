@@ -198,7 +198,8 @@ pub fn save(g: &Git) -> Result<()> {
         }
     }
     // Push before moving the local ref so an offline run is retried next time.
-    g.run(&["push", "--quiet", &remote, &format!("+{snap}:{own}")])?;
+    // Snapshots are not real pushes; hooks such as CI checks would run every minute.
+    g.run(&["push", "--quiet", "--no-verify", &remote, &format!("+{snap}:{own}")])?;
     g.run(&["update-ref", &own, &snap])?;
     Ok(())
 }
@@ -392,12 +393,17 @@ pub fn status(g: &Git) -> Result<()> {
 }
 
 pub fn save_all() -> Result<()> {
+    let mut failed = 0;
     for dir in repos(&Git::new("."))?.lines() {
         let g = Git::new(dir);
         let result = save(&g).and_then(|()| remote(&g).map_or(Ok(()), |r| fetch(&g, &r)));
         if let Err(e) = result {
             eprintln!("wip: {dir}: {e}");
+            failed += 1;
         }
     }
-    Ok(())
+    match failed {
+        0 => Ok(()),
+        n => Err(format!("{n} repo(s) failed")),
+    }
 }

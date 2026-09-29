@@ -19,7 +19,7 @@ fn save_all_continues_after_a_failing_repo() {
     std::fs::write(env.a.join("file.txt"), "a\n").unwrap();
     env.git(&env.b, &["remote", "set-url", "origin", "/nonexistent/remote.git"]);
     let out = env.wip(&env.root, "a", 100, &["save-all"]);
-    assert!(out.status.success());
+    assert!(!out.status.success(), "a failing repo is reported in the exit code");
     assert!(String::from_utf8_lossy(&out.stderr).contains("/b:"));
     assert!(env.remote_ref("refs/wip/a").is_some());
 }

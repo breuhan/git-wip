@@ -63,6 +63,7 @@ in
               "save-all"
             ];
             StartInterval = cfg.interval;
+            StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/git-wip.log";
             EnvironmentVariables.PATH = path;
           };
         };

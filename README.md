@@ -26,7 +26,11 @@ git wip status             # snapshot per host and whether a restore is pending
 git wip restore --force    # take the newest state even with local changes
 ```
 
-Everything not in `.gitignore` is pushed, so use a private remote.
+Everything not in `.gitignore` is pushed, so use a private remote. Snapshot
+pushes skip git hooks, so new Git LFS files in uncommitted work are not uploaded.
+
+Timer errors go to `~/Library/Logs/git-wip.log` (macOS) or
+`journalctl --user -u git-wip` (Linux).
 
 ## License
 

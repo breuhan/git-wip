@@ -116,3 +116,15 @@ fn save_skips_while_another_run_holds_the_lock() {
     env.wip_ok(&env.a, "a", 200, &["save"]);
     assert!(env.remote_ref("refs/wip/a").is_some());
 }
+
+#[test]
+fn save_ignores_pre_push_hooks() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let hook = env.a.join(".git/hooks/pre-push");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(env.a.join("file.txt"), "changed\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    assert!(env.remote_ref("refs/wip/a").is_some());
+}
