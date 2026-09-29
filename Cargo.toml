@@ -1,0 +1,10 @@
+[package]
+name = "git-wip"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Sync uncommitted git working state between machines via refs/wip/<host>"
+
+[[bin]]
+name = "git-wip"
+path = "src/main.rs"
