@@ -85,6 +85,8 @@ pub fn watch() -> Result<()> {
             .min()
             .unwrap();
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            // inotify also reports reads (Access); our own save reads the tree, so reacting would loop.
+            Ok(Ok(event)) if event.kind.is_access() => {}
             Ok(Ok(event)) => {
                 if event.kind.is_remove() {
                     // A deleted checkout: forget it so the next round watches a re-clone at the same path
