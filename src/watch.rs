@@ -66,7 +66,7 @@ pub fn watch() -> Result<()> {
                     }
                 }
                 let g = git(path);
-                let saved = if retry.remove(path) { wip::save(&g, false) } else { Ok(()) };
+                let saved = if retry.remove(path) { wip::save(&g, false).map(drop) } else { Ok(()) };
                 if saved.is_err() {
                     retry.insert(path.clone());
                 }

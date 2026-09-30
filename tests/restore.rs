@@ -10,6 +10,49 @@ fn dirty_a_on_feature(env: &Env) {
     env.wip_ok(&env.a, "a", 100, &["save"]);
 }
 
+/// Like `dirty_a_on_feature`, but a stays on main, where the prompt hook may restore.
+fn dirty_a(env: &Env) {
+    std::fs::write(env.a.join("file.txt"), "from a\n").unwrap();
+    std::fs::write(env.a.join("new.txt"), "untracked\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+}
+
+fn fetch_snapshots(env: &Env, dir: &std::path::Path) {
+    env.git(dir, &["fetch", "-q", "origin", "+refs/wip/*:refs/wip-remotes/origin/*"]);
+}
+
+#[test]
+fn prompt_never_switches_branches() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    fetch_snapshots(&env, &env.b);
+    let notice = env.wip_ok(&env.b, "b", 200, &["restore", "--prompt"]);
+    assert!(notice.contains("a is on feature (you are on main), run `git wip restore` to switch"), "{notice}");
+    assert_eq!(env.git(&env.b, &["symbolic-ref", "--short", "HEAD"]), "main");
+    assert_eq!(env.read(&env.b, "file.txt"), "one\n");
+
+    // Said once, also when a saves again on that branch.
+    assert_eq!(env.wip_ok(&env.b, "b", 210, &["restore", "--prompt"]), "");
+    std::fs::write(env.a.join("file.txt"), "from a, continued\n").unwrap();
+    env.wip_ok(&env.a, "a", 220, &["save"]);
+    fetch_snapshots(&env, &env.b);
+    assert_eq!(env.wip_ok(&env.b, "b", 230, &["restore", "--prompt"]), "");
+
+    // Switching takes an explicit restore, which names the branch.
+    let msg = env.wip_ok(&env.b, "b", 240, &["restore"]);
+    assert!(msg.contains("restored state from a on feature, switched from main"), "{msg}");
+    assert_eq!(env.read(&env.b, "file.txt"), "from a, continued\n");
+}
+
+#[test]
+fn prompt_restores_on_the_same_branch() {
+    let env = Env::new();
+    dirty_a(&env);
+    fetch_snapshots(&env, &env.b);
+    let msg = env.wip_ok(&env.b, "b", 200, &["restore", "--prompt"]);
+    assert!(msg.contains("restored state from a on main\n"), "{msg}");
+}
+
 #[test]
 fn round_trip_with_branch_staged_and_untracked() {
     let env = Env::new();
@@ -69,7 +112,7 @@ fn changes_on_both_hosts_are_not_overwritten() {
     std::fs::write(env.b.join("b.txt"), "only on b\n").unwrap();
     env.wip_ok(&env.b, "b", 110, &["save"]);
     let msg = env.wip_ok(&env.a, "a", 200, &["restore"]);
-    assert!(msg.contains("b and a both have changes, run `git wip restore --merge`"), "{msg}");
+    assert!(msg.contains("b and a both have changes\n     `git wip restore --merge` combines them"), "{msg}");
     assert_eq!(env.read(&env.a, "a.txt"), "only on a\n");
     env.wip_ok(&env.a, "a", 210, &["restore", "--force"]);
     assert_eq!(env.read(&env.a, "b.txt"), "only on b\n");
@@ -84,7 +127,7 @@ fn restore_is_idempotent_and_does_not_ping_pong() {
     env.wip_ok(&env.b, "b", 250, &["save"]);
     assert_eq!(env.remote_ref("refs/wip/b"), None, "applied state is not pushed back");
     let msg = env.wip_ok(&env.b, "b", 300, &["restore"]);
-    assert!(msg.is_empty(), "{msg}");
+    assert_eq!(msg, "wip: up to date\n");
     assert_eq!(env.git(&env.b, &["rev-parse", "refs/wip/b"]), b_ref);
 }
 
@@ -212,7 +255,8 @@ fn linked_worktree_is_skipped() {
     let wt = env.root.join("wt");
     env.git(&env.b, &["worktree", "add", "-q", "-b", "other", wt.to_str().unwrap()]);
     let out = env.wip(&wt, "b", 200, &["restore"]);
-    assert!(out.status.success() && out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    let msg = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && msg.contains("nothing is saved or restored"), "{msg}");
     assert_eq!(env.read(&wt, "file.txt"), "one\n");
 }
 
@@ -265,7 +309,7 @@ fn fast_forward_is_quiet_on_the_next_cd() {
     std::fs::write(env.b.join("notes.txt"), "b wip\n").unwrap();
     env.wip_ok(&env.b, "b", 300, &["restore"]);
     let msg = env.wip_ok(&env.b, "b", 310, &["restore", "--no-fetch"]);
-    assert!(msg.is_empty(), "{msg}");
+    assert_eq!(msg, "wip: up to date\n");
 }
 
 #[test]
@@ -284,8 +328,8 @@ fn blocked_message_is_shown_once_per_snapshot() {
 #[test]
 fn prompt_restores_once_the_refusal_is_resolved() {
     let env = Env::new();
-    dirty_a_on_feature(&env);
-    env.git(&env.b, &["fetch", "-q", "origin", "+refs/wip/*:refs/wip-remotes/origin/*"]);
+    dirty_a(&env);
+    fetch_snapshots(&env, &env.b);
     std::fs::write(env.b.join("file.txt"), "local b\n").unwrap();
     let refused = env.wip_ok(&env.b, "b", 200, &["restore", "--prompt"]);
     assert!(refused.contains("a has newer changes"), "{refused}");
@@ -297,7 +341,7 @@ fn prompt_restores_once_the_refusal_is_resolved() {
 #[test]
 fn refusal_recorded_by_an_older_version_is_rechecked() {
     let env = Env::new();
-    dirty_a_on_feature(&env);
+    dirty_a(&env);
     env.wip_ok(&env.b, "b", 150, &["save-all"]);
     let snap = env.git(&env.b, &["rev-parse", "refs/wip-remotes/origin/a"]);
     std::fs::write(env.b.join(".git/wip-notified"), &snap).unwrap();
@@ -334,7 +378,7 @@ fn explicit_restore_waits_for_the_lock() {
 #[test]
 fn prompt_restore_skips_while_locked() {
     let env = Env::new();
-    dirty_a_on_feature(&env);
+    dirty_a(&env);
     env.wip_ok(&env.b, "b", 150, &["save-all"]);
     let lock = std::fs::File::create(env.b.join(".git/wip.lock")).unwrap();
     lock.lock().unwrap();
@@ -509,7 +553,7 @@ fn a_restored_state_re_saved_on_a_new_head_is_not_own_work() {
 
     // b's re-save is newer by the clock but holds nothing a has not got.
     let msg = env.wip_ok(&env.a, "a", 300, &["restore"]);
-    assert!(msg.is_empty(), "{msg}");
+    assert_eq!(msg, "wip: up to date\n");
     assert_eq!(env.read(&env.a, "a2.txt"), "more from a\n");
 
     // b only carries a's older state, so it follows a's newer one.

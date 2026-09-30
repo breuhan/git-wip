@@ -26,10 +26,21 @@ fn lists_hosts_and_pending_restore() {
     let env = Env::new();
     a_saves_on_feature(&env);
     let out = status(&env, &env.b, "b");
-    assert!(out.starts_with("remote: origin\n"), "{out}");
-    assert!(out.lines().any(|l| l.starts_with("a ") && l.contains("feature")), "{out}");
-    assert!(out.lines().any(|l| l.starts_with("b ") && l.contains("main") && l.contains("(this host)")), "{out}");
-    assert!(out.ends_with("restore pending from a\n"), "{out}");
+    assert!(out.starts_with("remote: origin\n\nHOST  BRANCH   SAVED\n"), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("a     feature  ")), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("b     main     ") && l.ends_with("  (this host)")), "{out}");
+    assert!(out.ends_with("\n\na is on feature (you are on main), run `git wip restore` to switch\n"), "{out}");
+    assert!(!out.contains('\x1b'), "no color codes when not on a terminal: {out}");
+}
+
+#[test]
+fn pending_restore_on_the_same_branch() {
+    let env = Env::new();
+    std::fs::write(env.a.join("file.txt"), "from a\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    env.wip_ok(&env.b, "b", 150, &["save-all"]);
+    let out = status(&env, &env.b, "b");
+    assert!(out.ends_with("restore pending from a, at your next prompt in this repository\n"), "{out}");
 }
 
 #[test]

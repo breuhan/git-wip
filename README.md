@@ -14,7 +14,9 @@ machine had already seen them (each snapshot records, per machine, the newest
 snapshot it has taken in). If both changed independently, nothing is replaced;
 the machine that notices says so, the other one may not. If the other machine
 only has newer commits on your branch, the branch is fast-forwarded and your
-local changes stay, like `git pull`. The replaced state is kept in
+local changes stay, like `git pull`. The prompt never switches branches: if
+the other machine is on a different branch it says so once, and `git wip
+restore` switches. The replaced state is kept in
 `refs/wip-backup/<host>`; if applying fails, your state is put back. Restores
 never happen in the background, which makes an open editor writing stale content
 over them less likely, though an unsaved buffer can still do so after a restore.

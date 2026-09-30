@@ -23,21 +23,42 @@ fn disable_removes_remote_and_registration() {
 }
 
 #[test]
-fn noop_outside_enabled_repo() {
+fn outside_an_enabled_repo_the_prompt_is_silent_and_manual_commands_say_so() {
     let env = Env::new();
-    for args in [&["restore", "--no-fetch"][..], &["save"][..]] {
-        let out = env.wip(&env.root, "a", 0, args);
-        assert!(out.status.success());
-        assert!(out.stderr.is_empty() && out.stdout.is_empty(), "{args:?} printed output");
+    let out = env.wip(&env.root, "a", 0, &["restore", "--prompt"]);
+    assert!(out.status.success() && out.stderr.is_empty() && out.stdout.is_empty());
+    for args in [&["restore", "--no-fetch"][..], &["save"][..], &["restore", "--merge"][..]] {
+        assert_eq!(env.wip_ok(&env.root, "a", 0, args), "wip: not enabled, run `git wip enable <remote>`\n");
     }
 }
 
 #[test]
-fn usage_error_on_unknown_command() {
+fn usage_error_on_unknown_command_or_flag() {
     let env = Env::new();
-    let out = env.wip(&env.a, "a", 0, &["bogus"]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: git wip"));
+    for args in [&["bogus"][..], &["restore", "--frce"][..]] {
+        let out = env.wip(&env.a, "a", 0, args);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("usage: git wip <command>"), "{args:?}");
+    }
+}
+
+#[test]
+fn help_lists_the_commands() {
+    let env = Env::new();
+    let out = env.wip(&env.root, "a", 0, &["help"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && text.contains("restore") && text.contains("--merge"), "{text}");
+}
+
+#[test]
+fn manual_commands_confirm_what_they_did() {
+    let env = Env::new();
+    let a = env.git(&env.a, &["rev-parse", "--show-toplevel"]);
+    assert_eq!(env.wip_ok(&env.a, "a", 0, &["enable", "origin"]), format!("wip: syncing {a} through origin\n"));
+    std::fs::write(env.a.join("file.txt"), "changed\n").unwrap();
+    assert_eq!(env.wip_ok(&env.a, "a", 100, &["save"]), "wip: saved to origin\n");
+    assert_eq!(env.wip_ok(&env.a, "a", 110, &["save"]), "wip: nothing new to save\n");
+    assert_eq!(env.wip_ok(&env.a, "a", 0, &["disable"]), format!("wip: no longer syncing {a}\n"));
 }
 
 #[test]
