@@ -43,8 +43,19 @@ applied, and conflicting edits get the usual markers (yours first). It needs
 both machines on the same branch, makes no commit, and leaves nothing staged.
 Your previous state is in `refs/wip-backup/<host>`.
 
-Everything not in `.gitignore` is pushed, so use a private remote. Snapshot
-pushes skip git hooks, so new Git LFS files in uncommitted work are not uploaded.
+## Security
+
+Everything not in `.gitignore` is pushed within seconds, so use a private
+remote. Snapshot pushes skip git hooks, including secret scanners, and replaced
+snapshots stay on the remote as unreachable objects until it collects garbage.
+
+Snapshots are not signed. Whoever can push `refs/wip/*` to the remote, including
+any one of your machines, decides what the others restore at their next prompt.
+Only sync between machines, and through a remote, that you trust equally.
+
+## Limits
+
+New Git LFS files in uncommitted work are not uploaded (hooks are skipped).
 Submodules are not synced: neither changes inside them nor a moved submodule
 pointer. "Newest" is decided by save time, unless a snapshot records having
 seen yours; keep machine clocks in sync.

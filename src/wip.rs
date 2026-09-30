@@ -11,18 +11,35 @@ fn repos_file() -> Result<String> {
 }
 
 pub fn repo_list() -> Result<Vec<String>> {
-    Ok(repos(&Git::new("."))?.lines().map(str::to_string).collect())
+    Ok(repos()?.lines().map(str::to_string).collect())
 }
 
-fn repos(g: &Git) -> Result<String> {
-    Ok(g.run(&["config", "--file", &repos_file()?, "--get-all", "wip.repo"])
+/// The enabled repo containing `dir`, innermost first. The prompt hook runs in every directory
+/// and must not run git in (and so trust the config of) a repo the user never enabled.
+pub fn enabled_repo(dir: &std::path::Path) -> Result<Option<String>> {
+    let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+    let mut inside: Vec<String> = repo_list()?
+        .into_iter()
+        .filter(|r| std::fs::canonicalize(r).is_ok_and(|r| dir.starts_with(r)))
+        .collect();
+    inside.sort_by_key(|r| std::cmp::Reverse(r.len()));
+    Ok(inside.into_iter().next())
+}
+
+fn repos() -> Result<String> {
+    // Run from /, not from the current directory, which may be an untrusted repository.
+    Ok(Git::new("/")
+        .run(&["config", "--file", &repos_file()?, "--get-all", "wip.repo"])
         .unwrap_or_default())
 }
 
 pub fn enable(g: &Git, remote: &str) -> Result<()> {
+    if remote.starts_with('-') {
+        return Err(format!("invalid remote name: {remote}"));
+    }
     let top = g.run(&["rev-parse", "--show-toplevel"])?;
     g.run(&["config", "wip.remote", remote])?;
-    if !repos(g)?.lines().any(|l| l == top) {
+    if !repos()?.lines().any(|l| l == top) {
         g.run(&["config", "--file", &repos_file()?, "--add", "wip.repo", &top])?;
     }
     Ok(())
@@ -44,7 +61,10 @@ pub fn disable(g: &Git) -> Result<()> {
 }
 
 pub fn remote(g: &Git) -> Option<String> {
-    g.run(&["config", "--get", "wip.remote"]).ok()
+    // A value starting with a dash would be taken as an option by fetch and push.
+    g.run(&["config", "--get", "wip.remote"])
+        .ok()
+        .filter(|r| !r.starts_with('-'))
 }
 
 const BUSY: [&str; 6] = [
@@ -71,10 +91,25 @@ fn seen(g: &Git) -> Result<Vec<(String, String)>> {
     Ok(parse_seen(&text))
 }
 
+/// Trailers come from the remote: only plain host names and full object ids are accepted, since
+/// the ids are passed to git as revisions.
 fn parse_seen(text: &str) -> Vec<(String, String)> {
+    let host_ok = |h: &str| !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+    let oid_ok = |o: &str| matches!(o.len(), 40 | 64) && o.chars().all(|c| c.is_ascii_hexdigit());
     text.lines()
-        .filter_map(|l| l.trim().split_once(' ').map(|(h, o)| (h.to_string(), o.to_string())))
+        .filter_map(|l| l.trim().split_once(' '))
+        .filter(|(h, o)| host_ok(h) && !h.starts_with('-') && oid_ok(o))
+        .map(|(h, o)| (h.to_string(), o.to_string()))
         .collect()
+}
+
+/// The branch named in a snapshot's subject. It comes from the remote and is passed to checkout.
+fn snapshot_branch(g: &Git, snap: &str) -> Result<String> {
+    let subject = g.run(&["log", "-1", "--format=%s", snap])?;
+    branch_of(&subject)
+        .filter(|b| !b.starts_with('-') && g.ok(&["check-ref-format", "--branch", b]))
+        .map(str::to_string)
+        .ok_or("invalid branch name in the snapshot, not restoring".to_string())
 }
 
 /// The `Wip-Seen` entries of a snapshot.
@@ -217,6 +252,7 @@ pub fn fetch(g: &Git, remote: &str) -> Result<()> {
         "--quiet",
         // Only prunes within the refspec's destination, refs/wip-remotes/<remote>/.
         "--prune",
+        "--no-tags",
         remote,
         &format!("+refs/wip/*:refs/wip-remotes/{remote}/*"),
     ])
@@ -342,10 +378,7 @@ fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
     // Replacing our state loses nothing if the tree is clean, or if it is our last save and the
     // other host has seen that save (or it holds no changes).
     let untouched = clean || (unchanged && seen_by(g, own_oid.as_deref().unwrap_or_default(), &snap)?);
-    let subject = g.run(&["log", "-1", "--format=%s", &snap])?;
-    let branch = branch_of(&subject)
-        .ok_or(format!("unexpected snapshot message: {subject}"))?
-        .to_string();
+    let branch = snapshot_branch(g, &snap)?;
     let base = g.run(&["rev-parse", &format!("{snap}^1")])?;
     if !force && !untouched {
         let head = g.run(&["rev-parse", "HEAD"])?;
@@ -486,7 +519,9 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, prompt: bool) -> Result<
             base,
         } => {
             // --ff-only refuses when the new commits touch locally changed files.
-            if g.run(&["merge", "--ff-only", "-q", &base]).is_ok() {
+            if g.run(&["merge", "--ff-only", "--no-overwrite-ignore", "-q", &base])
+                .is_ok()
+            {
                 eprintln!("wip: fast-forwarded {branch} to {from}'s commits, local changes kept");
                 return Ok(());
             }
@@ -519,13 +554,14 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, prompt: bool) -> Result<
     let apply = || -> Result<()> {
         g.run(&["reset", "--hard", "-q"])?;
         g.run(&["clean", "-fdq"])?;
+        // Ignored files are in no backup, so git must not overwrite them with incoming ones.
         if exists {
-            g.run(&["checkout", "-q", &branch])?;
+            g.run(&["checkout", "-q", "--no-overwrite-ignore", &branch])?;
             if behind {
-                g.run(&["merge", "--ff-only", "-q", &base])?;
+                g.run(&["merge", "--ff-only", "--no-overwrite-ignore", "-q", &base])?;
             }
         } else {
-            g.run(&["checkout", "-q", "-b", &branch, &base])?;
+            g.run(&["checkout", "-q", "--no-overwrite-ignore", "-b", &branch, &base])?;
         }
         if has_changes(g, &snap)? {
             g.run(&["stash", "apply", "--index", "-q", &snap])?;
@@ -597,8 +633,7 @@ pub fn merge(g: &Git, fetch_first: bool) -> Result<()> {
         return Ok(());
     };
     let me = host();
-    let subject = g.run(&["log", "-1", "--format=%s", &snap])?;
-    let branch = branch_of(&subject).ok_or(format!("unexpected snapshot message: {subject}"))?;
+    let branch = snapshot_branch(g, &snap)?;
     let ours = g.run(&["symbolic-ref", "--short", "HEAD"])?;
     if branch != ours {
         return Err(format!(
@@ -718,12 +753,20 @@ pub fn status(g: &Git) -> Result<()> {
         };
         let name = name.strip_prefix(&prefix).unwrap_or(name);
         let mark = if name == me { " (this host)" } else { "" };
-        println!("{name:<12} {:<24} {date}{mark}", branch_of(subject).unwrap_or("?"));
+        // The subject comes from the remote; keep terminal control characters out of the output.
+        let branch: String = branch_of(subject)
+            .unwrap_or("?")
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        println!("{name:<12} {branch:<24} {date}{mark}");
     }
     if busy(g)? {
         println!("busy (detached HEAD or an operation in progress), nothing is saved or restored");
         return Ok(());
     }
+    // plan() snapshots through the same temporary index as a concurrent save.
+    let _lock = lock(g, true)?;
     match plan(g, &remote, false, false)? {
         Plan::UpToDate => println!("up to date"),
         Plan::Blocked { msg, .. } => println!("{msg}"),
@@ -735,7 +778,7 @@ pub fn status(g: &Git) -> Result<()> {
 
 pub fn save_all() -> Result<()> {
     let mut failed = 0;
-    for dir in repos(&Git::new("."))?.lines() {
+    for dir in repos()?.lines() {
         let g = Git::new(dir);
         let result = save(&g, true).and_then(|()| remote(&g).map_or(Ok(()), |r| fetch(&g, &r)));
         if let Err(e) = result {
