@@ -63,6 +63,13 @@ seen yours; keep machine clocks in sync.
 Watcher output goes to `~/Library/Logs/git-wip.log` (macOS) or
 `journalctl --user -u git-wip` (Linux).
 
+## TODO
+
+- Sign snapshots and verify them before any restore, fast-forward or merge
+  (for example SSH signatures checked against an allowed-signers file), so
+  that push access to `refs/wip/*` alone no longer decides what a machine
+  restores. See Security.
+
 ## License
 
 MIT
