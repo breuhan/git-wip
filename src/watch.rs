@@ -2,7 +2,7 @@ use crate::git::{Git, Result};
 use crate::wip;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
@@ -18,12 +18,14 @@ struct Repo {
     ino: u64,
 }
 
-/// Saves each enabled repo shortly after its files change, and saves and fetches periodically.
-/// Restoring is left to the prompt hook, where the user sees it and no editor is mid-write.
+/// Saves each enabled repo shortly after its files change and fetches periodically. Restoring is
+/// left to the prompt hook, where the user sees it and no editor is mid-write.
 pub fn watch() -> Result<()> {
     let debounce = Duration::from_millis(setting("GIT_WIP_DEBOUNCE_MS", 2000));
     let every = Duration::from_secs(setting("GIT_WIP_FETCH_SECS", 30));
-    set_ssh_timeouts();
+    // Repos to save on the next round: new to the watcher, or their last save failed (e.g. offline).
+    // Saving every repo every round would write snapshot objects for nothing.
+    let mut retry: HashSet<String> = HashSet::new();
     let (tx, rx) = channel();
     // Following symlinks would watch e.g. .direnv/flake-inputs into /nix/store (an inotify watch per dir).
     let config = Config::default().with_follow_symlinks(false);
@@ -55,12 +57,21 @@ pub fn watch() -> Result<()> {
                                     path: path.clone(),
                                     ino,
                                 });
+                                retry.insert(path.clone());
                             }
                             Err(e) => eprintln!("wip: {path}: {e}"),
                         }
                     }
                 }
-                sync(path);
+                let g = git(path);
+                if retry.remove(path) {
+                    save(&g, path, &mut retry);
+                }
+                if let Some(remote) = wip::remote(&g) {
+                    if let Err(e) = wip::fetch(&g, &remote) {
+                        eprintln!("wip: {path}: {e}");
+                    }
+                }
             }
             next_sync = Instant::now() + every;
         }
@@ -105,15 +116,32 @@ pub fn watch() -> Result<()> {
             .collect();
         for repo in due {
             let (_, paths) = changed.remove(&repo).unwrap();
-            let g = Git::new(&repo);
-            if all_ignored(&g, &paths) {
-                continue;
-            }
-            if let Err(e) = wip::save(&g, false) {
-                eprintln!("wip: {repo}: {e}");
+            let g = git(&repo);
+            if !all_ignored(&g, &paths) {
+                save(&g, &repo, &mut retry);
             }
         }
     }
+}
+
+fn save(g: &Git, repo: &str, retry: &mut HashSet<String>) {
+    if let Err(e) = wip::save(g, false) {
+        eprintln!("wip: {repo}: {e}");
+        retry.insert(repo.to_string());
+    }
+}
+
+/// A dead connection must not block every other repo, so ssh gets timeouts unless the user
+/// configured ssh for git (GIT_SSH_COMMAND would override a repo's core.sshCommand).
+fn git(repo: &str) -> Git {
+    let g = Git::new(repo);
+    if std::env::var_os("GIT_SSH_COMMAND").is_some() || g.ok(&["config", "--get", "core.sshCommand"]) {
+        return g;
+    }
+    g.with_env(
+        "GIT_SSH_COMMAND",
+        "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o BatchMode=yes",
+    )
 }
 
 fn inode(path: &Path) -> Option<u64> {
@@ -139,33 +167,6 @@ fn all_ignored(g: &Git, paths: &[PathBuf]) -> bool {
         .run_with(&["check-ignore", "-z", "--stdin"], &[], Some(&input))
         .unwrap_or_default();
     ignored.split('\0').filter(|p| !p.is_empty()).count() == paths.len()
-}
-
-/// Saving here too retries pushes that failed (e.g. offline) and covers changes made while not watching.
-fn sync(repo: &str) {
-    let g = Git::new(repo);
-    let result = match wip::remote(&g) {
-        Some(remote) => wip::save(&g, false).and_then(|()| wip::fetch(&g, &remote)),
-        None => Ok(()),
-    };
-    if let Err(e) = result {
-        eprintln!("wip: {repo}: {e}");
-    }
-}
-
-/// A dead connection must not block every other repo; only applies when ssh is not configured through git.
-fn set_ssh_timeouts() {
-    let configured =
-        std::env::var_os("GIT_SSH_COMMAND").is_some() || Git::new(".").ok(&["config", "--get", "core.sshCommand"]);
-    if !configured {
-        // SAFETY: single-threaded here, before the watcher starts its threads.
-        unsafe {
-            std::env::set_var(
-                "GIT_SSH_COMMAND",
-                "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o BatchMode=yes",
-            )
-        };
-    }
 }
 
 #[cfg(test)]

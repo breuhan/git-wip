@@ -63,9 +63,37 @@ fn host() -> String {
     })
 }
 
-/// The foreign snapshot this host last restored; recorded in its snapshots as `Wip-Seen`, so another
-/// host can tell whether its own last save was seen before it gets replaced.
-const SEEN: &str = "refs/wip-seen";
+/// Per host, the newest snapshot of it this host has taken in, directly or via another host's
+/// snapshot. Recorded in every snapshot as `Wip-Seen: <host> <oid>` trailers, so a host can tell
+/// whether its own last save was seen before it gets replaced.
+fn seen(g: &Git) -> Result<Vec<(String, String)>> {
+    let text = std::fs::read_to_string(g.path("wip-seen")?).unwrap_or_default();
+    Ok(parse_seen(&text))
+}
+
+fn parse_seen(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| l.trim().split_once(' ').map(|(h, o)| (h.to_string(), o.to_string())))
+        .collect()
+}
+
+/// The `Wip-Seen` entries of a snapshot.
+fn seen_in(g: &Git, snap: &str) -> Result<Vec<(String, String)>> {
+    Ok(parse_seen(&g.run(&[
+        "log",
+        "-1",
+        "--format=%(trailers:key=Wip-Seen,valueonly,separator=%x0A)",
+        snap,
+    ])?))
+}
+
+fn record_seen(g: &Git, from: &str, snap: &str) -> Result<()> {
+    let mut entries = seen_in(g, snap)?;
+    entries.retain(|(h, _)| h != from);
+    entries.push((from.to_string(), snap.to_string()));
+    let text: String = entries.iter().map(|(h, o)| format!("{h} {o}\n")).collect();
+    std::fs::write(g.path("wip-seen")?, text).map_err(|e| e.to_string())
+}
 
 fn own_ref() -> String {
     format!("refs/wip/{}", host())
@@ -135,8 +163,9 @@ fn snapshot(g: &Git) -> Result<String> {
         args.extend(["-p".into(), u]);
     }
     args.extend(["-m".into(), format!("WIP on {branch}: {head}")]);
-    if let Ok(seen) = g.run(&["rev-parse", "-q", "--verify", SEEN]) {
-        args.extend(["-m".into(), format!("Wip-Seen: {seen}")]);
+    let trailers: Vec<String> = seen(g)?.iter().map(|(h, o)| format!("Wip-Seen: {h} {o}")).collect();
+    if !trailers.is_empty() {
+        args.extend(["-m".into(), trailers.join("\n")]);
     }
     let env: &[(&str, &str)] = if idle { &[("GIT_COMMITTER_DATE", &date)] } else { &[] };
     g.run_with(&args.iter().map(String::as_str).collect::<Vec<_>>(), env, None)
@@ -281,34 +310,37 @@ enum Plan {
     },
 }
 
-/// What `restore` would do with the refs fetched so far.
-fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
+/// What `restore` would do with the refs fetched so far. `prompt`: the shell hook, which gives up
+/// early on a snapshot it already reported.
+fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
     let own = own_ref();
+    let own_oid = g.run(&["rev-parse", "-q", "--verify", &own]).ok();
     let Some((time, snap, from)) = newest_foreign(g, remote)? else {
         return Ok(Plan::UpToDate);
     };
-    if time <= commit_time(g, &own).max(commit_time(g, "HEAD")) {
+    let me = host();
+    // A snapshot made after seeing our own last save is newer whatever the clocks say.
+    let causal = own_oid
+        .as_ref()
+        .is_some_and(|o| seen_in(g, &snap).is_ok_and(|s| s.contains(&(me.clone(), o.clone()))));
+    if !causal && time <= commit_time(g, &own).max(commit_time(g, "HEAD")) {
         return Ok(Plan::UpToDate);
+    }
+    if prompt && !force && notified(g)? == snap {
+        // Already reported; skip the snapshot below, which would otherwise be redone at every prompt.
+        let msg = String::new();
+        return Ok(Plan::Blocked { msg, snap });
     }
     // -uall: untracked files count even with status.showUntrackedFiles=no, or clean -fd deletes them.
     let clean = g.run(&["status", "--porcelain", "--untracked-files=all"])?.is_empty();
-    if !force && !clean && notified(g)? == snap {
-        // Already refused; skip the snapshot below, which the prompt hook would otherwise redo each time.
-        let msg = format!("{from} has newer changes, run `git wip restore --force`");
-        return Ok(Plan::Blocked { msg, snap });
-    }
     let current = snapshot(g)?;
-    let untouched = clean
-        || g.run(&["rev-parse", "-q", "--verify", &own])
-            .map_or(Ok(false), |o| same(g, &o, &current))?;
-    if !force && !clean && untouched && !seen_by(g, &own, &snap)? {
-        let me = host();
-        let msg = format!(
-            "{from} and {me} both have changes, run `git wip restore --force` to take {from}'s \
-             (yours is kept in refs/wip-backup/{me})"
-        );
-        return Ok(Plan::Blocked { msg, snap });
-    }
+    let unchanged = match &own_oid {
+        Some(o) => same(g, o, &current)?,
+        None => false,
+    };
+    // Replacing our state loses nothing if the tree is clean, or if it is our last save and the
+    // other host has seen that save (or it holds no changes).
+    let untouched = clean || (unchanged && seen_by(g, own_oid.as_deref().unwrap_or_default(), &snap)?);
     let subject = g.run(&["log", "-1", "--format=%s", &snap])?;
     let branch = branch_of(&subject)
         .ok_or(format!("unexpected snapshot message: {subject}"))?
@@ -330,7 +362,14 @@ fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
                 });
             }
         }
-        let msg = format!("{from} has newer changes, run `git wip restore --force`");
+        let msg = if unchanged {
+            format!(
+                "{from} and {me} both have changes, run `git wip restore --force` to take {from}'s \
+                 (yours is kept in refs/wip-backup/{me})"
+            )
+        } else {
+            format!("{from} has newer changes, run `git wip restore --force`")
+        };
         return Ok(Plan::Blocked { msg, snap });
     }
     let local = format!("refs/heads/{branch}");
@@ -351,15 +390,13 @@ fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
     })
 }
 
-/// Whether `foreign` was made after seeing our own last save, so replacing ours loses nothing.
-/// True as well when our own ref is just what we restored, or holds no changes.
+/// Whether `foreign` was made after seeing our own last save `own`, so replacing it loses nothing.
+/// True as well when `own` is a snapshot we restored rather than made, or holds no changes.
 fn seen_by(g: &Git, own: &str, foreign: &str) -> Result<bool> {
-    let own = g.run(&["rev-parse", own])?;
-    if g.run(&["rev-parse", "-q", "--verify", SEEN]).is_ok_and(|s| s == own) || !has_changes(g, &own)? {
+    if seen(g)?.iter().any(|(_, o)| o == own) || !has_changes(g, own)? {
         return Ok(true);
     }
-    let seen = g.run(&["log", "-1", "--format=%(trailers:key=Wip-Seen,valueonly)", foreign])?;
-    Ok(seen.trim() == own)
+    Ok(seen_in(g, foreign)?.contains(&(host(), own.to_string())))
 }
 
 /// The foreign snapshot a refusal was last printed for.
@@ -376,18 +413,27 @@ fn notify_once(g: &Git, snap: &str, msg: &str) -> Result<()> {
     std::fs::write(g.path("wip-notified")?, snap).map_err(|e| e.to_string())
 }
 
-pub fn restore(g: &Git, force: bool, fetch_first: bool, wait: bool) -> Result<()> {
+/// `prompt`: the shell hook, which never waits for the lock and reports each refusal once.
+pub fn restore(g: &Git, force: bool, fetch_first: bool, prompt: bool) -> Result<()> {
     let Some(remote) = remote(g) else { return Ok(()) };
     if busy(g)? {
         return Ok(());
     }
-    let Some(_lock) = lock(g, wait)? else { return Ok(()) };
+    let Some(_lock) = lock(g, !prompt)? else { return Ok(()) };
     if fetch_first {
         fetch(g, &remote)?;
     }
-    let (from, snap, current, branch, base, exists, behind) = match plan(g, &remote, force)? {
+    // A manual restore always explains; the prompt hook only says it once per foreign snapshot.
+    let refuse = |snap: &str, msg: &str| {
+        if prompt {
+            return notify_once(g, snap, msg);
+        }
+        eprintln!("wip: {msg}");
+        std::fs::write(g.path("wip-notified")?, snap).map_err(|e| e.to_string())
+    };
+    let (from, snap, current, branch, base, exists, behind) = match plan(g, &remote, force, prompt)? {
         Plan::UpToDate => return Ok(()),
-        Plan::Blocked { msg, snap } => return notify_once(g, &snap, &msg),
+        Plan::Blocked { msg, snap } => return refuse(&snap, &msg),
         Plan::FastForward {
             from,
             snap,
@@ -399,8 +445,10 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, wait: bool) -> Result<()
                 eprintln!("wip: fast-forwarded {branch} to {from}'s commits, local changes kept");
                 return Ok(());
             }
-            let msg = format!("{from} has newer changes, run `git wip restore --force`");
-            return notify_once(g, &snap, &msg);
+            return refuse(
+                &snap,
+                &format!("{from} has newer changes, run `git wip restore --force`"),
+            );
         }
         Plan::Ready {
             from,
@@ -422,22 +470,47 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, wait: bool) -> Result<()
         &backup,
         &current,
     ])?;
-    g.run(&["reset", "--hard", "-q"])?;
-    g.run(&["clean", "-fdq"])?;
-    if exists {
-        g.run(&["checkout", "-q", &branch])?;
-        if behind {
-            g.run(&["merge", "--ff-only", "-q", &base])?;
+    let old_branch = g.run(&["symbolic-ref", "--short", "HEAD"])?;
+    let apply = || -> Result<()> {
+        g.run(&["reset", "--hard", "-q"])?;
+        g.run(&["clean", "-fdq"])?;
+        if exists {
+            g.run(&["checkout", "-q", &branch])?;
+            if behind {
+                g.run(&["merge", "--ff-only", "-q", &base])?;
+            }
+        } else {
+            g.run(&["checkout", "-q", "-b", &branch, &base])?;
         }
-    } else {
-        g.run(&["checkout", "-q", "-b", &branch, &base])?;
-    }
-    if has_changes(g, &snap)? {
-        g.run(&["stash", "apply", "--index", "-q", &snap])
-            .map_err(|e| format!("{e}\nprevious state in {backup}"))?;
+        if has_changes(g, &snap)? {
+            g.run(&["stash", "apply", "--index", "-q", &snap])?;
+        }
+        Ok(())
+    };
+    if let Err(e) = apply() {
+        // Put our state back, and remember the refusal so the prompt hook does not retry (and
+        // re-backup a half-restored tree) at every prompt.
+        let undo = || -> Result<()> {
+            g.run(&["reset", "--hard", "-q"])?;
+            g.run(&["clean", "-fdq"])?;
+            g.run(&["checkout", "-q", &old_branch])?;
+            g.run(&["reset", "--hard", "-q", &format!("{current}^1")])?;
+            if has_changes(g, &current)? {
+                g.run(&["stash", "apply", "--index", "-q", &current])?;
+            }
+            Ok(())
+        };
+        let undone = match undo() {
+            Ok(()) => "your state was put back".to_string(),
+            Err(u) => format!("putting your state back failed too ({u})"),
+        };
+        std::fs::write(g.path("wip-notified")?, &snap).map_err(|e| e.to_string())?;
+        return Err(format!(
+            "could not apply {from}'s state: {e}\n{undone}; it is also in {backup}"
+        ));
     }
     g.run(&["update-ref", &own_ref(), &snap])?;
-    g.run(&["update-ref", SEEN, &snap])?;
+    record_seen(g, &from, &snap)?;
     eprintln!("wip: restored state from {from} (previous state in {backup})");
     Ok(())
 }
@@ -469,7 +542,7 @@ pub fn status(g: &Git) -> Result<()> {
         println!("busy (detached HEAD or an operation in progress), nothing is saved or restored");
         return Ok(());
     }
-    match plan(g, &remote, false)? {
+    match plan(g, &remote, false, false)? {
         Plan::UpToDate => println!("up to date"),
         Plan::Blocked { msg, .. } => println!("{msg}"),
         Plan::Ready { from, .. } => println!("restore pending from {from}"),

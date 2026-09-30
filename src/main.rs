@@ -23,8 +23,8 @@ fn main() -> ExitCode {
         ["status"] => wip::status(&g),
         ["watch"] => watch::watch(),
         // --prompt is the shell hook: no network, and skip instead of waiting while busy.
-        ["restore", "--prompt"] => wip::restore(&g, false, false, false),
-        ["restore", flags @ ..] => wip::restore(&g, flags.contains(&"--force"), !flags.contains(&"--no-fetch"), true),
+        ["restore", "--prompt"] => wip::restore(&g, false, false, true),
+        ["restore", flags @ ..] => wip::restore(&g, flags.contains(&"--force"), !flags.contains(&"--no-fetch"), false),
         _ => Err(USAGE.to_string()),
     };
     match result {

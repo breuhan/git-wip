@@ -140,12 +140,16 @@ impl Env {
         );
     }
 
-    /// Starts `git wip watch` as `host` with short debounce and fetch intervals.
-    pub fn watch(&self, host: &str, date: i64) -> Watch {
+    /// Starts `git wip watch` as `host` with short debounce and fetch intervals; `None` uses the real clock.
+    pub fn watch(&self, host: &str, date: Option<i64>) -> Watch {
+        let envs = self.envs(date.unwrap_or(0));
+        let envs = envs
+            .into_iter()
+            .filter(|(k, _)| date.is_some() || !k.ends_with("_DATE"));
         let mut child = Command::new(env!("CARGO_BIN_EXE_git-wip"))
             .current_dir(&self.root)
             .arg("watch")
-            .envs(self.envs(date))
+            .envs(envs)
             .env("GIT_WIP_HOST", host)
             .env("GIT_WIP_DEBOUNCE_MS", "300")
             .env("GIT_WIP_FETCH_SECS", "1")

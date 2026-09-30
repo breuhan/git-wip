@@ -10,12 +10,14 @@ choose, and fetches the other machines' states every 30 seconds.
 
 At your next shell prompt in the repo, the newest state from another machine is
 restored, but only if this machine has no changes of its own, or the other
-machine had already seen them (each snapshot records which snapshot its machine
-last restored). If both changed independently, nothing is replaced. If the other
-machine only has newer commits on your branch, the branch is fast-forwarded and
-your local changes stay, like `git pull`. The replaced state is kept in
-`refs/wip-backup/<host>`. Restores never happen in the background, so an open
-editor cannot write stale content over them unnoticed.
+machine had already seen them (each snapshot records, per machine, the newest
+snapshot it has taken in). If both changed independently, nothing is replaced;
+the machine that notices says so, the other one may not. If the other machine
+only has newer commits on your branch, the branch is fast-forwarded and your
+local changes stay, like `git pull`. The replaced state is kept in
+`refs/wip-backup/<host>`; if applying fails, your state is put back. Restores
+never happen in the background, which makes an open editor writing stale content
+over them less likely, though an unsaved buffer can still do so after a restore.
 
 ## Install (Nix + home-manager)
 
@@ -37,7 +39,8 @@ git wip restore --force    # take the newest state even with local changes
 Everything not in `.gitignore` is pushed, so use a private remote. Snapshot
 pushes skip git hooks, so new Git LFS files in uncommitted work are not uploaded.
 Submodules are not synced: neither changes inside them nor a moved submodule
-pointer. "Newest" is decided by save time, so machine clocks must be in sync.
+pointer. "Newest" is decided by save time, unless a snapshot records having
+seen yours; keep machine clocks in sync.
 
 Watcher output goes to `~/Library/Logs/git-wip.log` (macOS) or
 `journalctl --user -u git-wip` (Linux).

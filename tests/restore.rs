@@ -302,9 +302,14 @@ fn blocked_message_is_shown_once_per_snapshot() {
     dirty_a_on_feature(&env);
     std::fs::write(env.b.join("file.txt"), "local b\n").unwrap();
     let first = env.wip_ok(&env.b, "b", 200, &["restore"]);
-    let second = env.wip_ok(&env.b, "b", 210, &["restore", "--no-fetch"]);
+    let second = env.wip_ok(&env.b, "b", 210, &["restore", "--prompt"]);
+    let explicit = env.wip_ok(&env.b, "b", 220, &["restore", "--no-fetch"]);
     assert!(first.contains("a has newer changes"), "{first}");
-    assert!(second.is_empty(), "{second}");
+    assert!(second.is_empty(), "the prompt hook reports once: {second}");
+    assert!(
+        explicit.contains("a has newer changes"),
+        "a manual restore explains why: {explicit}"
+    );
 }
 
 #[test]
@@ -349,13 +354,109 @@ fn prompt_restore_skips_while_locked() {
 }
 
 #[test]
-fn failed_apply_points_to_the_backup() {
+fn failed_apply_puts_the_previous_state_back_and_stops_retrying() {
     let env = Env::new();
-    dirty_a_on_feature(&env);
     std::fs::write(env.b.join(".git/info/exclude"), "new.txt\n").unwrap();
     std::fs::write(env.b.join("new.txt"), "ignored locally\n").unwrap();
-    let out = env.wip(&env.b, "b", 200, &["restore"]);
+    std::fs::write(env.b.join("file.txt"), "b work\n").unwrap();
+    env.wip_ok(&env.b, "b", 50, &["save"]);
+    dirty_a_on_feature(&env);
+    let saved = env.remote_ref("refs/wip/b").unwrap();
+
+    let out = env.wip(&env.b, "b", 200, &["restore", "--force"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success());
-    assert!(err.contains("previous state in refs/wip-backup/b"), "{err}");
+    assert!(err.contains("could not apply a's state"), "{err}");
+    assert_eq!(env.read(&env.b, "file.txt"), "b work\n", "previous state put back");
+    assert_eq!(env.git(&env.b, &["symbolic-ref", "--short", "HEAD"]), "main");
+
+    let prompt = env.wip_ok(&env.b, "b", 210, &["restore", "--prompt"]);
+    assert!(prompt.is_empty(), "no retry at every prompt: {prompt}");
+    env.wip_ok(&env.b, "b", 220, &["save"]);
+    assert_eq!(
+        env.remote_ref("refs/wip/b").unwrap(),
+        saved,
+        "b's work stays on the remote"
+    );
+    let reflog = env.git(&env.b, &["reflog", "show", "refs/wip-backup/b"]);
+    assert_eq!(reflog.lines().count(), 1, "{reflog}");
+}
+
+#[test]
+fn fast_forward_after_a_prior_save() {
+    let env = Env::new();
+    std::fs::write(env.b.join("notes.txt"), "b wip\n").unwrap();
+    env.wip_ok(&env.b, "b", 50, &["save"]);
+    env.wip_ok(&env.a, "a", 60, &["save"]);
+    a_commits_and_saves_clean(&env);
+    let msg = env.wip_ok(&env.b, "b", 300, &["restore"]);
+    assert!(msg.contains("fast-forwarded main to a's commits"), "{msg}");
+    assert_eq!(env.read(&env.b, "notes.txt"), "b wip\n");
+}
+
+#[test]
+fn handoff_back_does_not_depend_on_clocks() {
+    let env = Env::new();
+    std::fs::write(env.a.join("file.txt"), "from a\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    env.wip_ok(&env.b, "b", 110, &["restore"]);
+    std::fs::write(env.b.join("file.txt"), "from b, clock behind\n").unwrap();
+    env.wip_ok(&env.b, "b", 50, &["save"]);
+    env.wip_ok(&env.a, "a", 120, &["restore"]);
+    assert_eq!(env.read(&env.a, "file.txt"), "from b, clock behind\n");
+}
+
+fn third_clone(env: &Env) -> std::path::PathBuf {
+    env.git(&env.root, &["clone", "-q", "remote.git", "c"]);
+    let c = env.root.join("c");
+    env.wip_ok(&c, "c", 0, &["enable", "origin"]);
+    c
+}
+
+#[test]
+fn handoff_along_three_hosts() {
+    let env = Env::new();
+    let c = third_clone(&env);
+    std::fs::write(env.a.join("file.txt"), "a\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    env.wip_ok(&env.b, "b", 110, &["restore"]);
+    std::fs::write(env.b.join("file.txt"), "a b\n").unwrap();
+    env.wip_ok(&env.b, "b", 120, &["save"]);
+    env.wip_ok(&c, "c", 130, &["restore"]);
+    std::fs::write(c.join("file.txt"), "a b c\n").unwrap();
+    env.wip_ok(&c, "c", 140, &["save"]);
+    let msg = env.wip_ok(&env.a, "a", 150, &["restore"]);
+    assert!(msg.contains("restored state from c"), "{msg}");
+    assert_eq!(env.read(&env.a, "file.txt"), "a b c\n");
+}
+
+#[test]
+fn third_host_with_unseen_changes_is_refused() {
+    let env = Env::new();
+    let c = third_clone(&env);
+    std::fs::write(c.join("c.txt"), "only on c\n").unwrap();
+    env.wip_ok(&c, "c", 95, &["save"]);
+    std::fs::write(env.a.join("file.txt"), "a\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    env.wip_ok(&env.b, "b", 110, &["restore"]);
+    std::fs::write(env.b.join("file.txt"), "a b\n").unwrap();
+    env.wip_ok(&env.b, "b", 120, &["save"]);
+    let msg = env.wip_ok(&c, "c", 130, &["restore"]);
+    assert!(msg.contains("b and c both have changes"), "{msg}");
+    assert_eq!(env.read(&c, "c.txt"), "only on c\n");
+}
+
+#[test]
+fn normal_handoff_after_force() {
+    let env = Env::new();
+    std::fs::write(env.a.join("a.txt"), "a\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    std::fs::write(env.b.join("b.txt"), "b\n").unwrap();
+    env.wip_ok(&env.b, "b", 110, &["save"]);
+    env.wip_ok(&env.a, "a", 120, &["restore", "--force"]);
+    std::fs::write(env.b.join("b.txt"), "b again\n").unwrap();
+    env.wip_ok(&env.b, "b", 130, &["save"]);
+    let msg = env.wip_ok(&env.a, "a", 140, &["restore"]);
+    assert!(msg.contains("restored state from b"), "{msg}");
+    assert_eq!(env.read(&env.a, "b.txt"), "b again\n");
 }
