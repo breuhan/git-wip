@@ -148,16 +148,24 @@ fn inode(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|m| m.ino())
 }
 
-/// The innermost watched repo containing `path`, ignoring its `.git` directory (our own git calls write there).
+/// The innermost watched repo containing `path`. Its `.git` directory is ignored (our own git
+/// calls write there) except for HEAD and the branch refs: a branch switch or a commit changes
+/// the state to save without touching any file in the working tree.
 fn repo_of(watched: &HashMap<PathBuf, Repo>, path: &Path) -> Option<String> {
     let (root, repo) =
         watched.iter().filter(|(root, _)| path.starts_with(root)).max_by_key(|(root, _)| root.as_os_str().len())?;
-    (!path.starts_with(root.join(".git"))).then(|| repo.path.clone())
+    let git = root.join(".git");
+    let relevant = !path.starts_with(&git) || path == git.join("HEAD") || path.starts_with(git.join("refs/heads"));
+    relevant.then(|| repo.path.clone())
 }
 
 /// Whether any changed path is neither ignored nor inside a submodule. Submodule contents are
 /// not part of a snapshot, and check-ignore refuses paths inside one.
 fn worth_saving(g: &Git, repo: &str, mut paths: Vec<PathBuf>) -> bool {
+    // HEAD or a branch ref moved (see repo_of).
+    if paths.iter().any(|p| p.components().any(|c| c.as_os_str() == ".git")) {
+        return true;
+    }
     let modules = g.run(&["config", "--file", ".gitmodules", "--get-regexp", r"\.path$"]).unwrap_or_default();
     let modules: Vec<PathBuf> =
         modules.lines().filter_map(|l| l.split_once(' ')).map(|(_, p)| Path::new(repo).join(p)).collect();
@@ -180,5 +188,9 @@ mod tests {
         assert_eq!(repo_of(&watched, Path::new("/r/sub/f")).as_deref(), Some("inner"));
         assert_eq!(repo_of(&watched, Path::new("/r/f")).as_deref(), Some("outer"));
         assert_eq!(repo_of(&watched, Path::new("/r/.git/index")), None);
+        assert_eq!(repo_of(&watched, Path::new("/r/.git/FETCH_HEAD")), None);
+        assert_eq!(repo_of(&watched, Path::new("/r/.git/refs/wip/host")), None);
+        assert_eq!(repo_of(&watched, Path::new("/r/.git/HEAD")).as_deref(), Some("outer"));
+        assert_eq!(repo_of(&watched, Path::new("/r/.git/refs/heads/main")).as_deref(), Some("outer"));
     }
 }

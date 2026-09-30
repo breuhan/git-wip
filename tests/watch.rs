@@ -141,3 +141,15 @@ fn a_failing_repo_is_logged_once() {
     env.git(&env.a, &["remote", "set-url", "origin", &remote]);
     eventually("recovery is logged", || watch.log().contains("working again"));
 }
+
+#[test]
+fn a_branch_switch_without_file_changes_is_saved() {
+    let env = Env::new();
+    env.unregister(&env.b);
+    std::fs::write(env.a.join("file.txt"), "wip\n").unwrap();
+    let _watch = watching(&env, "a", Some(100));
+    let subject = || env.remote_ref("refs/wip/a").map(|oid| env.git(&env.a, &["log", "-1", "--format=%s", &oid]));
+    eventually("startup save", || subject().is_some_and(|s| s.starts_with("WIP on main: ")));
+    env.git(&env.a, &["checkout", "-q", "-b", "other"]);
+    eventually("snapshot on the new branch", || subject().is_some_and(|s| s.starts_with("WIP on other: ")));
+}

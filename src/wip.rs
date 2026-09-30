@@ -203,9 +203,12 @@ fn untracked(g: &Git, branch: &str) -> Result<Option<String>> {
     Ok(Some(g.run(&["commit-tree", &tree, "-m", &format!("untracked files on {branch}")])?))
 }
 
+/// What a snapshot holds: working tree, HEAD commit, index, untracked files and the branch (in
+/// its subject; a new branch at the same commit is a different state).
 fn state(g: &Git, c: &str) -> Result<String> {
     let mut s = g.run(&["rev-parse", &format!("{c}^{{tree}}"), &format!("{c}^1"), &format!("{c}^2^{{tree}}")])?;
     s.push_str(&g.rev(&format!("{c}^3^{{tree}}")).unwrap_or_default());
+    s.push_str(&g.run(&["log", "-1", "--format=%s", c])?);
     Ok(s)
 }
 

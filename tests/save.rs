@@ -162,3 +162,14 @@ fn untracked_files_that_are_gone_or_tracked_leave_the_snapshot() {
     let oid = env.remote_ref("refs/wip/a").unwrap();
     assert_eq!(env.git(&env.a, &["ls-tree", "-r", "--name-only", &format!("{oid}^3")]), "u3.txt");
 }
+
+#[test]
+fn a_new_branch_at_the_same_commit_is_a_new_state() {
+    let env = Env::new();
+    std::fs::write(env.a.join("file.txt"), "changed\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    env.git(&env.a, &["checkout", "-q", "-b", "other"]);
+    assert_eq!(env.wip_ok(&env.a, "a", 110, &["save"]), "wip: saved to origin\n");
+    let oid = env.remote_ref("refs/wip/a").unwrap();
+    assert!(env.git(&env.a, &["log", "-1", "--format=%s", &oid]).starts_with("WIP on other: "));
+}
