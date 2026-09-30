@@ -16,10 +16,7 @@ fn save_pushes_stash_commit_with_untracked_and_staged() {
     assert_eq!(env.git(&env.a, &["show", &format!("{oid}:file.txt")]), "changed");
     assert_eq!(env.git(&env.a, &["show", &format!("{oid}^2:staged.txt")]), "staged");
     assert_eq!(env.git(&env.a, &["show", &format!("{oid}^3:new.txt")]), "untracked");
-    assert_eq!(
-        env.git(&env.a, &["status", "--porcelain"]),
-        " M file.txt\nA  staged.txt\n?? new.txt"
-    );
+    assert_eq!(env.git(&env.a, &["status", "--porcelain"]), " M file.txt\nA  staged.txt\n?? new.txt");
 }
 
 #[test]
@@ -137,14 +134,8 @@ fn host_name_does_not_depend_on_path() {
     let expected = name.split('.').next().unwrap().to_string();
     let env = Env::new();
     std::fs::write(env.a.join("file.txt"), "changed\n").unwrap();
-    let git = std::process::Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .unwrap();
-    let git_bin = std::path::Path::new(String::from_utf8_lossy(&git.stdout).trim())
-        .parent()
-        .unwrap()
-        .to_path_buf();
+    let git = std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
+    let git_bin = std::path::Path::new(String::from_utf8_lossy(&git.stdout).trim()).parent().unwrap().to_path_buf();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-wip"))
         .current_dir(&env.a)
         .arg("save")
@@ -154,9 +145,6 @@ fn host_name_does_not_depend_on_path() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(
-        env.remote_ref(&format!("refs/wip/{expected}")).is_some(),
-        "expected refs/wip/{expected}"
-    );
+    assert!(env.remote_ref(&format!("refs/wip/{expected}")).is_some(), "expected refs/wip/{expected}");
     assert_eq!(env.remote_ref("refs/wip/unknown"), None);
 }

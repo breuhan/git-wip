@@ -19,12 +19,7 @@ impl Env {
         let root = std::env::temp_dir().join(format!("git-wip-test-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
-        let env = Env {
-            remote: root.join("remote.git"),
-            a: root.join("a"),
-            b: root.join("b"),
-            root,
-        };
+        let env = Env { remote: root.join("remote.git"), a: root.join("a"), b: root.join("b"), root };
         env.git(&env.root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
         env.git(&env.root, &["clone", "-q", "remote.git", "a"]);
         std::fs::write(env.a.join("file.txt"), "one\n").unwrap();
@@ -41,10 +36,7 @@ impl Env {
         let d = format!("@{} +0000", 1_700_000_000 + date);
         vec![
             ("HOME".into(), self.root.join("home").display().to_string()),
-            (
-                "XDG_STATE_HOME".into(),
-                self.root.join("home/.local/state").display().to_string(),
-            ),
+            ("XDG_STATE_HOME".into(), self.root.join("home/.local/state").display().to_string()),
             ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
             ("GIT_AUTHOR_NAME".into(), "t".into()),
             ("GIT_AUTHOR_EMAIL".into(), "t@t".into()),
@@ -60,17 +52,8 @@ impl Env {
     }
 
     pub fn git_at(&self, dir: &Path, date: i64, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .envs(self.envs(date))
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let out = Command::new("git").current_dir(dir).args(args).envs(self.envs(date)).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).trim_end().to_string()
     }
 
@@ -87,25 +70,12 @@ impl Env {
 
     pub fn wip_ok(&self, dir: &Path, host: &str, date: i64, args: &[&str]) -> String {
         let out = self.wip(dir, host, date, args);
-        assert!(
-            out.status.success(),
-            "git wip {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        assert!(out.status.success(), "git wip {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stderr).to_string()
     }
 
     pub fn remote_ref(&self, name: &str) -> Option<String> {
-        let out = self.git(
-            &self.root,
-            &[
-                "--git-dir",
-                "remote.git",
-                "for-each-ref",
-                "--format=%(objectname)",
-                name,
-            ],
-        );
+        let out = self.git(&self.root, &["--git-dir", "remote.git", "for-each-ref", "--format=%(objectname)", name]);
         (!out.is_empty()).then_some(out)
     }
 
@@ -115,10 +85,7 @@ impl Env {
         if !file.exists() {
             return vec![];
         }
-        let out = self.git(
-            &self.root,
-            &["config", "--file", file.to_str().unwrap(), "--get-all", "wip.repo"],
-        );
+        let out = self.git(&self.root, &["config", "--file", file.to_str().unwrap(), "--get-all", "wip.repo"]);
         out.lines().map(str::to_string).collect()
     }
 
@@ -128,24 +95,14 @@ impl Env {
         let top = self.git(dir, &["rev-parse", "--show-toplevel"]);
         self.git(
             &self.root,
-            &[
-                "config",
-                "--file",
-                file.to_str().unwrap(),
-                "--fixed-value",
-                "--unset-all",
-                "wip.repo",
-                &top,
-            ],
+            &["config", "--file", file.to_str().unwrap(), "--fixed-value", "--unset-all", "wip.repo", &top],
         );
     }
 
     /// Starts `git wip watch` as `host` with short debounce and fetch intervals; `None` uses the real clock.
     pub fn watch(&self, host: &str, date: Option<i64>) -> Watch {
         let envs = self.envs(date.unwrap_or(0));
-        let envs = envs
-            .into_iter()
-            .filter(|(k, _)| date.is_some() || !k.ends_with("_DATE"));
+        let envs = envs.into_iter().filter(|(k, _)| date.is_some() || !k.ends_with("_DATE"));
         let mut child = Command::new(env!("CARGO_BIN_EXE_git-wip"))
             .current_dir(&self.root)
             .arg("watch")

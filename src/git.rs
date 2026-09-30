@@ -11,10 +11,7 @@ pub struct Git {
 
 impl Git {
     pub fn new(dir: impl Into<PathBuf>) -> Git {
-        Git {
-            dir: dir.into(),
-            env: vec![],
-        }
+        Git { dir: dir.into(), env: vec![] }
     }
 
     /// Sets an environment variable for every git call.
@@ -60,11 +57,7 @@ impl Git {
             child.wait_with_output().map_err(|e| e.to_string())
         })?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
-        let err = format!(
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+        let err = format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
         Ok((out.status.code().unwrap_or(-1), stdout, err))
     }
 
@@ -80,10 +73,7 @@ mod tests {
     #[test]
     fn with_env_reaches_git() {
         let g = Git::new(std::env::temp_dir()).with_env("GIT_WIP_TEST_VAR", "passed");
-        assert_eq!(
-            g.run(&["-c", "alias.v=!echo $GIT_WIP_TEST_VAR", "v"]).unwrap(),
-            "passed"
-        );
+        assert_eq!(g.run(&["-c", "alias.v=!echo $GIT_WIP_TEST_VAR", "v"]).unwrap(), "passed");
     }
 
     #[test]

@@ -4,8 +4,7 @@ mod wip;
 
 use std::process::ExitCode;
 
-const USAGE: &str =
-    "usage: git wip enable <remote> | disable | save | save-all | status | watch | restore [--merge | --force] [--no-fetch] [--prompt]";
+const USAGE: &str = "usage: git wip enable <remote> | disable | save | save-all | status | watch | restore [--merge | --force] [--no-fetch] [--prompt]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -20,10 +19,7 @@ fn main() -> ExitCode {
         };
     }
     let here = git::Git::new(".");
-    let g = git::Git::new(
-        here.run(&["rev-parse", "--show-toplevel"])
-            .unwrap_or_else(|_| ".".into()),
-    );
+    let g = git::Git::new(here.run(&["rev-parse", "--show-toplevel"]).unwrap_or_else(|_| ".".into()));
     let result = match args.as_slice() {
         ["enable", remote] => wip::enable(&g, remote),
         ["disable"] => wip::disable(&g),

@@ -32,10 +32,7 @@ fn seen_trailer_cannot_inject_git_options() {
     let env = Env::new();
     dirty_and_saved_a(&env);
     let target = env.root.join("pwned");
-    forge(
-        &env,
-        &format!("WIP on main: x\n\nWip-Seen: a --output={}", target.display()),
-    );
+    forge(&env, &format!("WIP on main: x\n\nWip-Seen: a --output={}", target.display()));
     env.wip(&env.a, "a", 600, &["restore"]);
     assert!(!target.exists(), "diff-tree --output wrote outside the repo");
     assert_eq!(env.read(&env.a, "file.txt"), "a wip\n");
@@ -67,17 +64,10 @@ fn prompt_hook_ignores_repos_that_are_not_enabled() {
     std::fs::write(env.a.join("file.txt"), "from a\n").unwrap();
     env.wip_ok(&env.a, "a", 100, &["save"]);
     env.unregister(&env.b);
-    env.git(
-        &env.b,
-        &["fetch", "-q", "origin", "+refs/wip/*:refs/wip-remotes/origin/*"],
-    );
+    env.git(&env.b, &["fetch", "-q", "origin", "+refs/wip/*:refs/wip-remotes/origin/*"]);
     let msg = env.wip_ok(&env.b, "b", 200, &["restore", "--prompt"]);
     assert!(msg.is_empty(), "{msg}");
-    assert_eq!(
-        env.read(&env.b, "file.txt"),
-        "one\n",
-        "wip.remote alone must not enable the hook"
-    );
+    assert_eq!(env.read(&env.b, "file.txt"), "one\n", "wip.remote alone must not enable the hook");
 }
 
 #[test]
@@ -85,10 +75,7 @@ fn prompt_hook_works_from_a_subdirectory_of_an_enabled_repo() {
     let env = Env::new();
     std::fs::write(env.a.join("file.txt"), "from a\n").unwrap();
     env.wip_ok(&env.a, "a", 100, &["save"]);
-    env.git(
-        &env.b,
-        &["fetch", "-q", "origin", "+refs/wip/*:refs/wip-remotes/origin/*"],
-    );
+    env.git(&env.b, &["fetch", "-q", "origin", "+refs/wip/*:refs/wip-remotes/origin/*"]);
     std::fs::create_dir_all(env.b.join("sub/dir")).unwrap();
     let msg = env.wip_ok(&env.b.join("sub/dir"), "b", 200, &["restore", "--prompt"]);
     assert!(msg.contains("restored state from a"), "{msg}");

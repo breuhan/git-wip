@@ -18,19 +18,15 @@ pub fn repo_list() -> Result<Vec<String>> {
 /// and must not run git in (and so trust the config of) a repo the user never enabled.
 pub fn enabled_repo(dir: &std::path::Path) -> Result<Option<String>> {
     let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
-    let mut inside: Vec<String> = repo_list()?
-        .into_iter()
-        .filter(|r| std::fs::canonicalize(r).is_ok_and(|r| dir.starts_with(r)))
-        .collect();
+    let mut inside: Vec<String> =
+        repo_list()?.into_iter().filter(|r| std::fs::canonicalize(r).is_ok_and(|r| dir.starts_with(r))).collect();
     inside.sort_by_key(|r| std::cmp::Reverse(r.len()));
     Ok(inside.into_iter().next())
 }
 
 fn repos() -> Result<String> {
     // Run from /, not from the current directory, which may be an untrusted repository.
-    Ok(Git::new("/")
-        .run(&["config", "--file", &repos_file()?, "--get-all", "wip.repo"])
-        .unwrap_or_default())
+    Ok(Git::new("/").run(&["config", "--file", &repos_file()?, "--get-all", "wip.repo"]).unwrap_or_default())
 }
 
 pub fn enable(g: &Git, remote: &str) -> Result<()> {
@@ -48,33 +44,16 @@ pub fn enable(g: &Git, remote: &str) -> Result<()> {
 pub fn disable(g: &Git) -> Result<()> {
     let top = g.run(&["rev-parse", "--show-toplevel"])?;
     let _ = g.run(&["config", "--unset", "wip.remote"]);
-    let _ = g.run(&[
-        "config",
-        "--file",
-        &repos_file()?,
-        "--fixed-value",
-        "--unset-all",
-        "wip.repo",
-        &top,
-    ]);
+    let _ = g.run(&["config", "--file", &repos_file()?, "--fixed-value", "--unset-all", "wip.repo", &top]);
     Ok(())
 }
 
 pub fn remote(g: &Git) -> Option<String> {
     // A value starting with a dash would be taken as an option by fetch and push.
-    g.run(&["config", "--get", "wip.remote"])
-        .ok()
-        .filter(|r| !r.starts_with('-'))
+    g.run(&["config", "--get", "wip.remote"]).ok().filter(|r| !r.starts_with('-'))
 }
 
-const BUSY: [&str; 6] = [
-    "rebase-merge",
-    "rebase-apply",
-    "MERGE_HEAD",
-    "CHERRY_PICK_HEAD",
-    "REVERT_HEAD",
-    "BISECT_LOG",
-];
+const BUSY: [&str; 6] = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"];
 
 fn host() -> String {
     std::env::var("GIT_WIP_HOST").unwrap_or_else(|_| {
@@ -114,12 +93,7 @@ fn snapshot_branch(g: &Git, snap: &str) -> Result<String> {
 
 /// The `Wip-Seen` entries of a snapshot.
 fn seen_in(g: &Git, snap: &str) -> Result<Vec<(String, String)>> {
-    Ok(parse_seen(&g.run(&[
-        "log",
-        "-1",
-        "--format=%(trailers:key=Wip-Seen,valueonly,separator=%x0A)",
-        snap,
-    ])?))
+    Ok(parse_seen(&g.run(&["log", "-1", "--format=%(trailers:key=Wip-Seen,valueonly,separator=%x0A)", snap])?))
 }
 
 fn record_seen(g: &Git, from: &str, snap: &str) -> Result<()> {
@@ -171,29 +145,15 @@ fn snapshot(g: &Git) -> Result<String> {
         let index = g.run(&["commit-tree", &tree, "-p", &head, "-m", &format!("index on {branch}")])?;
         (tree, index)
     } else {
-        (
-            g.run(&["rev-parse", &format!("{w}^{{tree}}")])?,
-            g.run(&["rev-parse", &format!("{w}^2")])?,
-        )
+        (g.run(&["rev-parse", &format!("{w}^{{tree}}")])?, g.run(&["rev-parse", &format!("{w}^2")])?)
     };
     let untracked = untracked(g, &branch)?;
     // A host's first clean snapshot dates from its HEAD commit, so enabling an idle host never
     // looks newer than real WIP elsewhere.
     let first = !g.ok(&["rev-parse", "-q", "--verify", &own_ref()]);
     let idle = first && w.is_empty() && untracked.is_none();
-    let date = if idle {
-        g.run(&["log", "-1", "--format=%cI", "HEAD"])?
-    } else {
-        String::new()
-    };
-    let mut args = vec![
-        "commit-tree".to_string(),
-        tree,
-        "-p".into(),
-        head.clone(),
-        "-p".into(),
-        index,
-    ];
+    let date = if idle { g.run(&["log", "-1", "--format=%cI", "HEAD"])? } else { String::new() };
+    let mut args = vec!["commit-tree".to_string(), tree, "-p".into(), head.clone(), "-p".into(), index];
     if let Some(u) = untracked {
         args.extend(["-p".into(), u]);
     }
@@ -214,28 +174,14 @@ fn untracked(g: &Git, branch: &str) -> Result<Option<String>> {
     let idx = g.path("wip-index")?;
     let _ = std::fs::remove_file(&idx);
     let env = [("GIT_INDEX_FILE", idx.to_str().ok_or("non-utf8 git dir")?)];
-    g.run_with(
-        &["update-index", "--add", "-z", "--stdin"],
-        &env,
-        Some(files.as_bytes()),
-    )?;
+    g.run_with(&["update-index", "--add", "-z", "--stdin"], &env, Some(files.as_bytes()))?;
     let tree = g.run_with(&["write-tree"], &env, None);
     let _ = std::fs::remove_file(&idx);
-    Ok(Some(g.run(&[
-        "commit-tree",
-        &tree?,
-        "-m",
-        &format!("untracked files on {branch}"),
-    ])?))
+    Ok(Some(g.run(&["commit-tree", &tree?, "-m", &format!("untracked files on {branch}")])?))
 }
 
 fn state(g: &Git, c: &str) -> Result<String> {
-    let mut s = g.run(&[
-        "rev-parse",
-        &format!("{c}^{{tree}}"),
-        &format!("{c}^1"),
-        &format!("{c}^2^{{tree}}"),
-    ])?;
+    let mut s = g.run(&["rev-parse", &format!("{c}^{{tree}}"), &format!("{c}^1"), &format!("{c}^2^{{tree}}")])?;
     if let Ok(u) = g.run(&["rev-parse", "-q", "--verify", &format!("{c}^3^{{tree}}")]) {
         s.push_str(&u);
     }
@@ -267,10 +213,10 @@ pub fn save(g: &Git, wait: bool) -> Result<()> {
     let Some(_lock) = lock(g, wait)? else { return Ok(()) };
     let snap = snapshot(g)?;
     let own = own_ref();
-    if let Ok(old) = g.run(&["rev-parse", "-q", "--verify", &own]) {
-        if same(g, &old, &snap)? {
-            return Ok(());
-        }
+    if let Ok(old) = g.run(&["rev-parse", "-q", "--verify", &own])
+        && same(g, &old, &snap)?
+    {
+        return Ok(());
     }
     // Push before moving the local ref so an offline run is retried next time.
     // Snapshots are not real pushes; hooks such as CI checks would run every minute.
@@ -284,21 +230,14 @@ fn is_ancestor(g: &Git, a: &str, b: &str) -> bool {
 }
 
 fn commit_time(g: &Git, rev: &str) -> i64 {
-    g.run(&["log", "-1", "--format=%ct", rev])
-        .ok()
-        .and_then(|t| t.parse().ok())
-        .unwrap_or(0)
+    g.run(&["log", "-1", "--format=%ct", rev]).ok().and_then(|t| t.parse().ok()).unwrap_or(0)
 }
 
 /// (commit time, oid, host) of the newest snapshot fetched from another host.
 fn newest_foreign(g: &Git, remote: &str) -> Result<Option<(i64, String, String)>> {
     let prefix = format!("refs/wip-remotes/{remote}/");
     let me = host();
-    let out = g.run(&[
-        "for-each-ref",
-        "--format=%(committerdate:unix) %(objectname) %(refname)",
-        &prefix,
-    ])?;
+    let out = g.run(&["for-each-ref", "--format=%(committerdate:unix) %(objectname) %(refname)", &prefix])?;
     Ok(out
         .lines()
         .filter_map(|l| {
@@ -356,9 +295,8 @@ fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
     };
     let me = host();
     // A snapshot made after seeing our own last save is newer whatever the clocks say.
-    let causal = own_oid
-        .as_ref()
-        .is_some_and(|o| seen_in(g, &snap).is_ok_and(|s| s.contains(&(me.clone(), o.clone()))));
+    let causal =
+        own_oid.as_ref().is_some_and(|o| seen_in(g, &snap).is_ok_and(|s| s.contains(&(me.clone(), o.clone()))));
     if !causal && time <= commit_time(g, &own).max(commit_time(g, "HEAD")) {
         return Ok(Plan::UpToDate);
     }
@@ -388,12 +326,7 @@ fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
                 return Ok(Plan::UpToDate); // we already have its commits and it has no changes
             }
             if is_ancestor(g, &head, &base) {
-                return Ok(Plan::FastForward {
-                    from,
-                    snap,
-                    branch,
-                    base,
-                });
+                return Ok(Plan::FastForward { from, snap, branch, base });
             }
         }
         let msg = if unchanged {
@@ -413,15 +346,7 @@ fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
         let msg = format!("{branch} has diverged from {from}, not restoring");
         return Ok(Plan::Blocked { msg, snap });
     }
-    Ok(Plan::Ready {
-        from,
-        snap,
-        current,
-        branch,
-        base,
-        exists,
-        behind,
-    })
+    Ok(Plan::Ready { from, snap, current, branch, base, exists, behind })
 }
 
 /// Whether `foreign` was made after seeing our own last save `own`, so replacing it loses nothing.
@@ -455,9 +380,7 @@ fn changes(g: &Git, snap: &str) -> Result<String> {
             );
         }
     }
-    out += &g
-        .run(&["rev-parse", "-q", "--verify", &format!("{snap}^3^{{tree}}")])
-        .unwrap_or_default();
+    out += &g.run(&["rev-parse", "-q", "--verify", &format!("{snap}^3^{{tree}}")]).unwrap_or_default();
     Ok(out)
 }
 
@@ -512,44 +435,21 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, prompt: bool) -> Result<
     let (from, snap, current, branch, base, exists, behind) = match plan(g, &remote, force, prompt)? {
         Plan::UpToDate => return Ok(()),
         Plan::Blocked { msg, snap } => return refuse(&snap, &msg),
-        Plan::FastForward {
-            from,
-            snap,
-            branch,
-            base,
-        } => {
+        Plan::FastForward { from, snap, branch, base } => {
             // --ff-only refuses when the new commits touch locally changed files.
-            if g.run(&["merge", "--ff-only", "--no-overwrite-ignore", "-q", &base])
-                .is_ok()
-            {
+            if g.run(&["merge", "--ff-only", "--no-overwrite-ignore", "-q", &base]).is_ok() {
                 eprintln!("wip: fast-forwarded {branch} to {from}'s commits, local changes kept");
                 return Ok(());
             }
-            return refuse(
-                &snap,
-                &format!("{from} has newer changes, run `git wip restore --force`"),
-            );
+            return refuse(&snap, &format!("{from} has newer changes, run `git wip restore --force`"));
         }
-        Plan::Ready {
-            from,
-            snap,
-            current,
-            branch,
-            base,
-            exists,
-            behind,
-        } => (from, snap, current, branch, base, exists, behind),
+        Plan::Ready { from, snap, current, branch, base, exists, behind } => {
+            (from, snap, current, branch, base, exists, behind)
+        }
     };
 
     let backup = format!("refs/wip-backup/{}", host());
-    g.run(&[
-        "update-ref",
-        "--create-reflog",
-        "-m",
-        "git wip restore",
-        &backup,
-        &current,
-    ])?;
+    g.run(&["update-ref", "--create-reflog", "-m", "git wip restore", &backup, &current])?;
     let old_branch = g.run(&["symbolic-ref", "--short", "HEAD"])?;
     let apply = || -> Result<()> {
         g.run(&["reset", "--hard", "-q"])?;
@@ -587,9 +487,7 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, prompt: bool) -> Result<
         };
         std::fs::write(g.path("wip-notified")?, &snap).map_err(|e| e.to_string())?;
         record_refusal(g, &snap)?;
-        return Err(format!(
-            "could not apply {from}'s state: {e}\n{undone}; it is also in {backup}"
-        ));
+        return Err(format!("could not apply {from}'s state: {e}\n{undone}; it is also in {backup}"));
     }
     g.run(&["update-ref", &own_ref(), &snap])?;
     record_seen(g, &from, &snap)?;
@@ -636,17 +534,13 @@ pub fn merge(g: &Git, fetch_first: bool) -> Result<()> {
     let branch = snapshot_branch(g, &snap)?;
     let ours = g.run(&["symbolic-ref", "--short", "HEAD"])?;
     if branch != ours {
-        return Err(format!(
-            "{from} is on {branch}, {me} on {ours}; merging needs the same branch"
-        ));
+        return Err(format!("{from} is on {branch}, {me} on {ours}; merging needs the same branch"));
     }
     let base = g.run(&["rev-parse", &format!("{snap}^1")])?;
     let head = g.run(&["rev-parse", "HEAD"])?;
     let behind = is_ancestor(g, &head, &base);
     if !behind && !is_ancestor(g, &base, &head) {
-        return Err(format!(
-            "{branch} has diverged from {from}; merge or rebase the commits first"
-        ));
+        return Err(format!("{branch} has diverged from {from}; merge or rebase the commits first"));
     }
     let current = snapshot(g)?;
     let ancestor = seen_in(g, &snap)?
@@ -656,21 +550,9 @@ pub fn merge(g: &Git, fetch_first: bool) -> Result<()> {
 
     let ours_tree = full_tree(g, &current)?;
     let commit = |tree: &str| g.run(&["commit-tree", tree, "-m", "git wip merge"]);
-    let sides = [
-        commit(&full_tree(g, &ancestor)?)?,
-        commit(&ours_tree)?,
-        commit(&full_tree(g, &snap)?)?,
-    ];
+    let sides = [commit(&full_tree(g, &ancestor)?)?, commit(&ours_tree)?, commit(&full_tree(g, &snap)?)?];
     let merge_base = format!("--merge-base={}", sides[0]);
-    let args = [
-        "merge-tree",
-        "--write-tree",
-        "--name-only",
-        "--no-messages",
-        &merge_base,
-        &sides[1],
-        &sides[2],
-    ];
+    let args = ["merge-tree", "--write-tree", "--name-only", "--no-messages", &merge_base, &sides[1], &sides[2]];
     let (code, out, err) = g.run_code(&args, &[], None)?;
     let mut lines = out.lines();
     let merged = match (code, lines.next()) {
@@ -681,34 +563,14 @@ pub fn merge(g: &Git, fetch_first: bool) -> Result<()> {
 
     // Git would overwrite an ignored file that a file from the other host collides with, and
     // ignored files are in no backup.
-    let added = g.run(&[
-        "diff-tree",
-        "-r",
-        "-z",
-        "--name-only",
-        "--diff-filter=A",
-        &ours_tree,
-        merged,
-    ])?;
+    let added = g.run(&["diff-tree", "-r", "-z", "--name-only", "--diff-filter=A", &ours_tree, merged])?;
     let top = std::path::PathBuf::from(g.run(&["rev-parse", "--show-toplevel"])?);
-    if let Some(path) = added
-        .split('\0')
-        .find(|p| !p.is_empty() && top.join(p).symlink_metadata().is_ok())
-    {
-        return Err(format!(
-            "{path} from {from} exists here as an ignored file\nnothing was changed"
-        ));
+    if let Some(path) = added.split('\0').find(|p| !p.is_empty() && top.join(p).symlink_metadata().is_ok()) {
+        return Err(format!("{path} from {from} exists here as an ignored file\nnothing was changed"));
     }
 
     let backup = format!("refs/wip-backup/{me}");
-    g.run(&[
-        "update-ref",
-        "--create-reflog",
-        "-m",
-        "git wip restore --merge",
-        &backup,
-        &current,
-    ])?;
+    g.run(&["update-ref", "--create-reflog", "-m", "git wip restore --merge", &backup, &current])?;
     // With everything in the index, the two-tree read-tree also removes files the merge deleted.
     g.run(&["read-tree", &ours_tree])?;
     g.run(&["update-index", "-q", "--refresh"])?;
@@ -741,11 +603,7 @@ pub fn status(g: &Git) -> Result<()> {
     println!("remote: {remote}");
     let prefix = format!("refs/wip-remotes/{remote}/");
     let me = host();
-    let refs = g.run(&[
-        "for-each-ref",
-        "--format=%(refname)%00%(committerdate:relative)%00%(subject)",
-        &prefix,
-    ])?;
+    let refs = g.run(&["for-each-ref", "--format=%(refname)%00%(committerdate:relative)%00%(subject)", &prefix])?;
     for line in refs.lines() {
         let mut it = line.split('\0');
         let (Some(name), Some(date), Some(subject)) = (it.next(), it.next(), it.next()) else {
@@ -754,11 +612,7 @@ pub fn status(g: &Git) -> Result<()> {
         let name = name.strip_prefix(&prefix).unwrap_or(name);
         let mark = if name == me { " (this host)" } else { "" };
         // The subject comes from the remote; keep terminal control characters out of the output.
-        let branch: String = branch_of(subject)
-            .unwrap_or("?")
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect();
+        let branch: String = branch_of(subject).unwrap_or("?").chars().filter(|c| !c.is_control()).collect();
         println!("{name:<12} {branch:<24} {date}{mark}");
     }
     if busy(g)? {

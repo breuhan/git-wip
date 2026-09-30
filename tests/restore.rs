@@ -19,10 +19,7 @@ fn round_trip_with_branch_staged_and_untracked() {
     assert_eq!(env.git(&env.b, &["symbolic-ref", "--short", "HEAD"]), "feature");
     assert_eq!(env.read(&env.b, "file.txt"), "from a\n");
     assert_eq!(env.read(&env.b, "new.txt"), "untracked\n");
-    assert_eq!(
-        env.git(&env.b, &["status", "--porcelain"]),
-        " M file.txt\nA  staged.txt\n?? new.txt"
-    );
+    assert_eq!(env.git(&env.b, &["status", "--porcelain"]), " M file.txt\nA  staged.txt\n?? new.txt");
 }
 
 #[test]
@@ -31,10 +28,7 @@ fn dirty_tree_refuses_and_force_restores_with_backup() {
     dirty_a_on_feature(&env);
     std::fs::write(env.b.join("file.txt"), "local b\n").unwrap();
     let msg = env.wip_ok(&env.b, "b", 200, &["restore"]);
-    assert!(
-        msg.contains("a has newer changes, run `git wip restore --force`"),
-        "{msg}"
-    );
+    assert!(msg.contains("a has newer changes, run `git wip restore --force`"), "{msg}");
     assert_eq!(env.read(&env.b, "file.txt"), "local b\n");
 
     env.wip_ok(&env.b, "b", 200, &["restore", "--force"]);
@@ -75,10 +69,7 @@ fn changes_on_both_hosts_are_not_overwritten() {
     std::fs::write(env.b.join("b.txt"), "only on b\n").unwrap();
     env.wip_ok(&env.b, "b", 110, &["save"]);
     let msg = env.wip_ok(&env.a, "a", 200, &["restore"]);
-    assert!(
-        msg.contains("b and a both have changes, run `git wip restore --merge`"),
-        "{msg}"
-    );
+    assert!(msg.contains("b and a both have changes, run `git wip restore --merge`"), "{msg}");
     assert_eq!(env.read(&env.a, "a.txt"), "only on a\n");
     env.wip_ok(&env.a, "a", 210, &["restore", "--force"]);
     assert_eq!(env.read(&env.a, "b.txt"), "only on b\n");
@@ -105,10 +96,7 @@ fn unpushed_commits_travel() {
     std::fs::write(env.a.join("file.txt"), "committed\nplus wip\n").unwrap();
     env.wip_ok(&env.a, "a", 100, &["save"]);
     env.wip_ok(&env.b, "b", 200, &["restore"]);
-    assert_eq!(
-        env.git(&env.b, &["rev-parse", "main"]),
-        env.git(&env.a, &["rev-parse", "main"])
-    );
+    assert_eq!(env.git(&env.b, &["rev-parse", "main"]), env.git(&env.a, &["rev-parse", "main"]));
     assert_eq!(env.read(&env.b, "file.txt"), "committed\nplus wip\n");
 }
 
@@ -120,10 +108,7 @@ fn clean_state_supersedes_wip() {
     env.git_at(&env.a, 150, &["commit", "-q", "-am", "done"]);
     env.wip_ok(&env.a, "a", 200, &["save"]);
     env.wip_ok(&env.b, "b", 300, &["restore"]);
-    assert_eq!(
-        env.git(&env.b, &["rev-parse", "main"]),
-        env.git(&env.a, &["rev-parse", "main"])
-    );
+    assert_eq!(env.git(&env.b, &["rev-parse", "main"]), env.git(&env.a, &["rev-parse", "main"]));
     assert_eq!(env.git(&env.b, &["status", "--porcelain"]), "");
 }
 
@@ -227,11 +212,7 @@ fn linked_worktree_is_skipped() {
     let wt = env.root.join("wt");
     env.git(&env.b, &["worktree", "add", "-q", "-b", "other", wt.to_str().unwrap()]);
     let out = env.wip(&wt, "b", 200, &["restore"]);
-    assert!(
-        out.status.success() && out.stderr.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success() && out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(env.read(&wt, "file.txt"), "one\n");
 }
 
@@ -258,14 +239,8 @@ fn clean_foreign_commits_fast_forward_under_local_changes() {
     a_commits_and_saves_clean(&env);
     std::fs::write(env.b.join("notes.txt"), "b wip\n").unwrap();
     let msg = env.wip_ok(&env.b, "b", 300, &["restore"]);
-    assert!(
-        msg.contains("fast-forwarded main to a's commits, local changes kept"),
-        "{msg}"
-    );
-    assert_eq!(
-        env.git(&env.b, &["rev-parse", "HEAD"]),
-        env.git(&env.a, &["rev-parse", "HEAD"])
-    );
+    assert!(msg.contains("fast-forwarded main to a's commits, local changes kept"), "{msg}");
+    assert_eq!(env.git(&env.b, &["rev-parse", "HEAD"]), env.git(&env.a, &["rev-parse", "HEAD"]));
     assert_eq!(env.read(&env.b, "notes.txt"), "b wip\n");
     assert_eq!(env.read(&env.b, "file.txt"), "a commit\n");
 }
@@ -277,10 +252,7 @@ fn fast_forward_refused_when_local_changes_conflict() {
     std::fs::write(env.b.join("file.txt"), "b wip\n").unwrap();
     let head = env.git(&env.b, &["rev-parse", "HEAD"]);
     let msg = env.wip_ok(&env.b, "b", 300, &["restore"]);
-    assert!(
-        msg.contains("a has newer changes, run `git wip restore --force`"),
-        "{msg}"
-    );
+    assert!(msg.contains("a has newer changes, run `git wip restore --force`"), "{msg}");
     assert_eq!(env.git(&env.b, &["rev-parse", "HEAD"]), head);
     assert_eq!(env.read(&env.b, "file.txt"), "b wip\n");
 }
@@ -306,20 +278,14 @@ fn blocked_message_is_shown_once_per_snapshot() {
     let explicit = env.wip_ok(&env.b, "b", 220, &["restore", "--no-fetch"]);
     assert!(first.contains("a has newer changes"), "{first}");
     assert!(second.is_empty(), "the prompt hook reports once: {second}");
-    assert!(
-        explicit.contains("a has newer changes"),
-        "a manual restore explains why: {explicit}"
-    );
+    assert!(explicit.contains("a has newer changes"), "a manual restore explains why: {explicit}");
 }
 
 #[test]
 fn prompt_restores_once_the_refusal_is_resolved() {
     let env = Env::new();
     dirty_a_on_feature(&env);
-    env.git(
-        &env.b,
-        &["fetch", "-q", "origin", "+refs/wip/*:refs/wip-remotes/origin/*"],
-    );
+    env.git(&env.b, &["fetch", "-q", "origin", "+refs/wip/*:refs/wip-remotes/origin/*"]);
     std::fs::write(env.b.join("file.txt"), "local b\n").unwrap();
     let refused = env.wip_ok(&env.b, "b", 200, &["restore", "--prompt"]);
     assert!(refused.contains("a has newer changes"), "{refused}");
@@ -400,11 +366,7 @@ fn failed_apply_puts_the_previous_state_back_and_stops_retrying() {
     let prompt = env.wip_ok(&env.b, "b", 210, &["restore", "--prompt"]);
     assert!(prompt.is_empty(), "no retry at every prompt: {prompt}");
     env.wip_ok(&env.b, "b", 220, &["save"]);
-    assert_eq!(
-        env.remote_ref("refs/wip/b").unwrap(),
-        saved,
-        "b's work stays on the remote"
-    );
+    assert_eq!(env.remote_ref("refs/wip/b").unwrap(), saved, "b's work stays on the remote");
     let reflog = env.git(&env.b, &["reflog", "show", "refs/wip-backup/b"]);
     assert_eq!(reflog.lines().count(), 1, "{reflog}");
 }

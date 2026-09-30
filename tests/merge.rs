@@ -72,14 +72,8 @@ fn conflicting_edits_leave_markers_and_a_backup() {
     assert!(!out.status.success(), "a conflict is reported in the exit code");
     assert!(msg.contains("conflicts in: file.txt"), "{msg}");
     let merged = env.read(&env.a, "file.txt");
-    assert!(
-        merged.contains("<<<<<<<") && merged.contains("edited on a") && merged.contains("edited on b"),
-        "{merged}"
-    );
-    assert_eq!(
-        env.git(&env.a, &["show", "refs/wip-backup/a:file.txt"]),
-        "one\nedited on a"
-    );
+    assert!(merged.contains("<<<<<<<") && merged.contains("edited on a") && merged.contains("edited on b"), "{merged}");
+    assert_eq!(env.git(&env.a, &["show", "refs/wip-backup/a:file.txt"]), "one\nedited on a");
 }
 
 #[test]
@@ -94,10 +88,7 @@ fn takes_the_other_hosts_commits_along() {
     env.wip_ok(&env.b, "b", 200, &["save"]);
 
     assert!(merge_into_a(&env).status.success());
-    assert_eq!(
-        env.git(&env.a, &["rev-parse", "HEAD"]),
-        env.git(&env.b, &["rev-parse", "HEAD"])
-    );
+    assert_eq!(env.git(&env.a, &["rev-parse", "HEAD"]), env.git(&env.b, &["rev-parse", "HEAD"]));
     assert_eq!(env.read(&env.a, "a2.txt"), "more from a\n");
     assert_eq!(
         env.git(&env.a, &["status", "--porcelain", "--untracked-files=all"]),
@@ -145,8 +136,5 @@ fn a_colliding_ignored_file_stops_the_merge_without_changes() {
     assert!(!out.status.success());
     assert!(msg.contains("nothing was changed"), "{msg}");
     assert_eq!(env.read(&env.a, "b2.txt"), "ignored on a\n");
-    assert_eq!(
-        env.git(&env.a, &["status", "--porcelain", "--untracked-files=all"]),
-        before
-    );
+    assert_eq!(env.git(&env.a, &["status", "--porcelain", "--untracked-files=all"]), before);
 }

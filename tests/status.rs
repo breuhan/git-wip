@@ -18,10 +18,7 @@ fn a_saves_on_feature(env: &Env) {
 fn not_enabled() {
     let env = Env::new();
     env.wip_ok(&env.a, "a", 0, &["disable"]);
-    assert_eq!(
-        status(&env, &env.a, "a"),
-        "not enabled, run `git wip enable <remote>`\n"
-    );
+    assert_eq!(status(&env, &env.a, "a"), "not enabled, run `git wip enable <remote>`\n");
 }
 
 #[test]
@@ -30,15 +27,8 @@ fn lists_hosts_and_pending_restore() {
     a_saves_on_feature(&env);
     let out = status(&env, &env.b, "b");
     assert!(out.starts_with("remote: origin\n"), "{out}");
-    assert!(
-        out.lines().any(|l| l.starts_with("a ") && l.contains("feature")),
-        "{out}"
-    );
-    assert!(
-        out.lines()
-            .any(|l| l.starts_with("b ") && l.contains("main") && l.contains("(this host)")),
-        "{out}"
-    );
+    assert!(out.lines().any(|l| l.starts_with("a ") && l.contains("feature")), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("b ") && l.contains("main") && l.contains("(this host)")), "{out}");
     assert!(out.ends_with("restore pending from a\n"), "{out}");
 }
 
@@ -48,10 +38,7 @@ fn blocked_by_local_changes() {
     a_saves_on_feature(&env);
     std::fs::write(env.b.join("file.txt"), "local b\n").unwrap();
     let out = status(&env, &env.b, "b");
-    assert!(
-        out.ends_with("a has newer changes, run `git wip restore --force`\n"),
-        "{out}"
-    );
+    assert!(out.ends_with("a has newer changes, run `git wip restore --force`\n"), "{out}");
 }
 
 #[test]

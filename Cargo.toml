@@ -1,17 +1,11 @@
 [package]
 name = "git-wip"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.89"
 license = "MIT"
 description = "Sync uncommitted git working state between machines via refs/wip/<host>"
-
-[[bin]]
-name = "git-wip"
-path = "src/main.rs"
 
 [dependencies]
 gethostname = "1.1.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
-
-[dev-dependencies]
-gethostname = "1.1.0"

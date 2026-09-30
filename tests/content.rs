@@ -31,10 +31,7 @@ fn deletions_and_renames() {
     env.git(&env.a, &["mv", "file.txt", "renamed.txt"]);
     std::fs::remove_file(env.a.join("other.txt")).unwrap();
     hand_over(&env);
-    assert_eq!(
-        env.git(&env.b, &["status", "--porcelain"]),
-        " D other.txt\nR  file.txt -> renamed.txt"
-    );
+    assert_eq!(env.git(&env.b, &["status", "--porcelain"]), " D other.txt\nR  file.txt -> renamed.txt");
 }
 
 #[test]
@@ -67,10 +64,7 @@ fn symlinks_stay_links() {
     let env = Env::new();
     std::os::unix::fs::symlink("file.txt", env.a.join("link")).unwrap();
     hand_over(&env);
-    assert_eq!(
-        std::fs::read_link(env.b.join("link")).unwrap().to_str(),
-        Some("file.txt")
-    );
+    assert_eq!(std::fs::read_link(env.b.join("link")).unwrap().to_str(), Some("file.txt"));
 }
 
 #[test]
@@ -85,9 +79,6 @@ fn branch_that_exists_at_an_older_commit_is_fast_forwarded() {
     std::fs::write(env.a.join("file.txt"), "topic wip\n").unwrap();
     hand_over(&env);
     assert_eq!(env.git(&env.b, &["symbolic-ref", "--short", "HEAD"]), "topic");
-    assert_eq!(
-        env.git(&env.b, &["rev-parse", "topic"]),
-        env.git(&env.a, &["rev-parse", "topic"])
-    );
+    assert_eq!(env.git(&env.b, &["rev-parse", "topic"]), env.git(&env.a, &["rev-parse", "topic"]));
     assert_eq!(env.read(&env.b, "file.txt"), "topic wip\n");
 }
