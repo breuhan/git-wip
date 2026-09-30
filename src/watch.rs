@@ -22,12 +22,15 @@ struct Repo {
 /// left to the prompt hook, where the user sees it and no editor is mid-write.
 pub fn watch() -> Result<()> {
     let debounce = Duration::from_millis(setting("GIT_WIP_DEBOUNCE_MS", 2000));
-    let every = Duration::from_secs(setting("GIT_WIP_FETCH_SECS", 30));
+    let every = Duration::from_secs(setting("GIT_WIP_FETCH_SECS", 60));
     // Logs each file event that leads to a save.
     let debug = std::env::var_os("GIT_WIP_DEBUG").is_some();
     // Repos to save on the next round: new to the watcher, or their last save failed (e.g. offline).
     // Saving every repo every round would write snapshot objects for nothing.
     let mut retry: HashSet<String> = HashSet::new();
+    // Repos whose last round failed. An error is logged when a repo starts failing, not every
+    // round: offline for a day would otherwise fill the log.
+    let mut failing: HashSet<String> = HashSet::new();
     let (tx, rx) = channel();
     // Following symlinks would watch e.g. .direnv/flake-inputs into /nix/store (an inotify watch per dir).
     let config = Config::default().with_follow_symlinks(false);
@@ -63,13 +66,18 @@ pub fn watch() -> Result<()> {
                     }
                 }
                 let g = git(path);
-                if retry.remove(path) {
-                    save(&g, path, &mut retry);
+                let saved = if retry.remove(path) { wip::save(&g, false) } else { Ok(()) };
+                if saved.is_err() {
+                    retry.insert(path.clone());
                 }
-                if let Some(remote) = wip::remote(&g)
-                    && let Err(e) = wip::fetch(&g, &remote)
-                {
-                    eprintln!("wip: {path}: {e}");
+                let result = saved.and_then(|()| wip::remote(&g).map_or(Ok(()), |remote| wip::fetch(&g, &remote)));
+                match result {
+                    Ok(()) if failing.remove(path) => eprintln!("wip: {path}: working again"),
+                    Ok(()) => {}
+                    Err(e) if failing.insert(path.clone()) => {
+                        eprintln!("wip: {path}: {e}\nwip: {path}: not logging further failures until it works again")
+                    }
+                    Err(_) => {}
                 }
             }
             next_sync = Instant::now() + every;
@@ -80,6 +88,10 @@ pub fn watch() -> Result<()> {
             // inotify also reports reads (Access); our own save reads the tree, so reacting would loop.
             Ok(Ok(event)) if event.kind.is_access() => {}
             Ok(Ok(event)) => {
+                if event.need_rescan() {
+                    // The OS dropped events (queue overflow), so changes may have gone unnoticed.
+                    retry.extend(watched.values().map(|r| r.path.clone()));
+                }
                 if event.kind.is_remove() {
                     // A deleted checkout: forget it so the next round watches a re-clone at the same path
                     // (Linux may give the new directory the same inode, so the inode check can miss it).
@@ -109,22 +121,17 @@ pub fn watch() -> Result<()> {
         for repo in due {
             let (_, paths) = changed.remove(&repo).unwrap();
             let g = git(&repo);
-            if !all_ignored(&g, &paths) {
-                save(&g, &repo, &mut retry);
+            // A failure is retried, and reported, by the next round.
+            if worth_saving(&g, &repo, paths) && wip::save(&g, false).is_err() {
+                retry.insert(repo);
             }
         }
     }
 }
 
-fn save(g: &Git, repo: &str, retry: &mut HashSet<String>) {
-    if let Err(e) = wip::save(g, false) {
-        eprintln!("wip: {repo}: {e}");
-        retry.insert(repo.to_string());
-    }
-}
-
-/// A dead connection must not block every other repo, so ssh gets timeouts unless the user
-/// configured ssh for git (GIT_SSH_COMMAND would override a repo's core.sshCommand).
+/// A dead connection must not block every other repo, so ssh gets timeouts, and one connection
+/// per host is kept open across rounds instead of logging in every time. Not applied when the
+/// user configured ssh for git (GIT_SSH_COMMAND would override a repo's core.sshCommand).
 fn git(repo: &str) -> Git {
     let g = Git::new(repo);
     if std::env::var_os("GIT_SSH_COMMAND").is_some() || g.ok(&["config", "--get", "core.sshCommand"]) {
@@ -132,7 +139,8 @@ fn git(repo: &str) -> Git {
     }
     g.with_env(
         "GIT_SSH_COMMAND",
-        "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o BatchMode=yes",
+        "ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o BatchMode=yes \
+         -o ControlMaster=auto -o ControlPath=~/.ssh/git-wip-%C -o ControlPersist=120",
     )
 }
 
@@ -147,11 +155,17 @@ fn repo_of(watched: &HashMap<PathBuf, Repo>, path: &Path) -> Option<String> {
     (!path.starts_with(root.join(".git"))).then(|| repo.path.clone())
 }
 
-fn all_ignored(g: &Git, paths: &[PathBuf]) -> bool {
+/// Whether any changed path is neither ignored nor inside a submodule. Submodule contents are
+/// not part of a snapshot, and check-ignore refuses paths inside one.
+fn worth_saving(g: &Git, repo: &str, mut paths: Vec<PathBuf>) -> bool {
+    let modules = g.run(&["config", "--file", ".gitmodules", "--get-regexp", r"\.path$"]).unwrap_or_default();
+    let modules: Vec<PathBuf> =
+        modules.lines().filter_map(|l| l.split_once(' ')).map(|(_, p)| Path::new(repo).join(p)).collect();
+    paths.retain(|p| !modules.iter().any(|m| p.starts_with(m)));
     let input: Vec<u8> =
         paths.iter().flat_map(|p| p.as_os_str().as_encoded_bytes().iter().chain(b"\0")).copied().collect();
     let ignored = g.run_with(&["check-ignore", "-z", "--stdin"], &[], Some(&input)).unwrap_or_default();
-    ignored.split('\0').filter(|p| !p.is_empty()).count() == paths.len()
+    ignored.split('\0').filter(|p| !p.is_empty()).count() != paths.len()
 }
 
 #[cfg(test)]

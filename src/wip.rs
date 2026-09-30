@@ -12,10 +12,17 @@ fn repos_file() -> Result<String> {
     Ok(dir + "/repos")
 }
 
+/// One path per line, read without starting git: the prompt hook does this in every directory.
+/// Lines of the earlier git-config format (`repo = <path>` under `[wip]`) are still understood.
 pub fn repo_list() -> Result<Vec<String>> {
-    // Run from /, not from the current directory, which may be an untrusted repository.
-    let repos = Git::new("/").run(&["config", "--file", &repos_file()?, "--get-all", "wip.repo"]);
-    Ok(repos.unwrap_or_default().lines().map(str::to_string).collect())
+    let text = std::fs::read_to_string(repos_file()?).unwrap_or_default();
+    let paths = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('['));
+    Ok(paths.map(|l| l.strip_prefix("repo = ").unwrap_or(l).to_string()).collect())
+}
+
+fn write_repo_list(repos: &[String]) -> Result<()> {
+    let text: String = repos.iter().map(|r| format!("{r}\n")).collect();
+    std::fs::write(repos_file()?, text).map_err(|e| e.to_string())
 }
 
 /// The innermost enabled repo containing `dir`. The prompt hook runs in every directory and
@@ -32,17 +39,19 @@ pub fn enable(g: &Git, remote: &str) -> Result<()> {
     }
     let top = g.run(&["rev-parse", "--show-toplevel"])?;
     g.run(&["config", "wip.remote", remote])?;
-    if !repo_list()?.contains(&top) {
-        g.run(&["config", "--file", &repos_file()?, "--add", "wip.repo", &top])?;
+    let mut repos = repo_list()?;
+    if !repos.contains(&top) {
+        repos.push(top);
     }
-    Ok(())
+    write_repo_list(&repos)
 }
 
 pub fn disable(g: &Git) -> Result<()> {
     let top = g.run(&["rev-parse", "--show-toplevel"])?;
     let _ = g.run(&["config", "--unset", "wip.remote"]);
-    let _ = g.run(&["config", "--file", &repos_file()?, "--fixed-value", "--unset-all", "wip.repo", &top]);
-    Ok(())
+    let mut repos = repo_list()?;
+    repos.retain(|r| *r != top);
+    write_repo_list(&repos)
 }
 
 pub fn remote(g: &Git) -> Option<String> {
@@ -167,13 +176,22 @@ fn untracked(g: &Git, branch: &str) -> Result<Option<String>> {
     if files.is_empty() {
         return Ok(None);
     }
-    let idx = g.path("wip-index")?;
-    let _ = std::fs::remove_file(&idx);
+    // The index is kept between saves: git then skips re-reading untracked files that did not
+    // change, which matters for large ones. Entries for files no longer untracked are dropped.
+    let idx = g.path("wip-untracked-index")?;
     let env = [("GIT_INDEX_FILE", idx.to_str().ok_or("non-utf8 git dir")?)];
-    g.run_with(&["update-index", "--add", "-z", "--stdin"], &env, Some(files.as_bytes()))?;
-    let tree = g.run_with(&["write-tree"], &env, None);
-    let _ = std::fs::remove_file(&idx);
-    Ok(Some(g.run(&["commit-tree", &tree?, "-m", &format!("untracked files on {branch}")])?))
+    let now: std::collections::HashSet<&str> = files.split('\0').collect();
+    let tree = || -> Result<String> {
+        let before = g.run_with(&["ls-files", "-z"], &env, None)?;
+        let gone: String =
+            before.split('\0').filter(|p| !p.is_empty() && !now.contains(p)).flat_map(|p| [p, "\0"]).collect();
+        g.run_with(&["update-index", "--force-remove", "-z", "--stdin"], &env, Some(gone.as_bytes()))?;
+        g.run_with(&["update-index", "--add", "-z", "--stdin"], &env, Some(files.as_bytes()))?;
+        g.run_with(&["write-tree"], &env, None)
+    };
+    // A damaged index must not fail every later save; the next one starts from scratch.
+    let tree = tree().inspect_err(|_| drop(std::fs::remove_file(&idx)))?;
+    Ok(Some(g.run(&["commit-tree", &tree, "-m", &format!("untracked files on {branch}")])?))
 }
 
 fn state(g: &Git, c: &str) -> Result<String> {

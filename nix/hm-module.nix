@@ -23,8 +23,8 @@ in
     };
     fetchInterval = lib.mkOption {
       type = lib.types.ints.positive;
-      default = 30;
-      description = "Seconds between fetching and restoring other hosts' snapshots.";
+      default = 60;
+      description = "Seconds between fetching other hosts' snapshots.";
     };
   };
 
@@ -33,12 +33,13 @@ in
       {
         home.packages = [ cfg.package ];
         # Restores only happen here, at a prompt the user sees; the watcher just saves and fetches.
+        # The binary is called directly: going through `git wip` costs an extra process per prompt.
         programs.zsh.initContent = ''
-          _git_wip() { git wip restore --prompt; }
+          _git_wip() { ${lib.getExe cfg.package} restore --prompt; }
           autoload -Uz add-zsh-hook && add-zsh-hook precmd _git_wip
         '';
         programs.fish.interactiveShellInit = ''
-          function _git_wip --on-event fish_prompt; git wip restore --prompt; end
+          function _git_wip --on-event fish_prompt; ${lib.getExe cfg.package} restore --prompt; end
         '';
       }
       (lib.mkIf pkgs.stdenv.isLinux {

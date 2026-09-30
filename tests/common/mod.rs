@@ -81,22 +81,18 @@ impl Env {
 
     /// Repos registered by `git wip enable`.
     pub fn repos(&self) -> Vec<String> {
-        let file = self.root.join("home/.local/state/git-wip/repos");
-        if !file.exists() {
-            return vec![];
-        }
-        let out = self.git(&self.root, &["config", "--file", file.to_str().unwrap(), "--get-all", "wip.repo"]);
-        out.lines().map(str::to_string).collect()
+        std::fs::read_to_string(self.repos_file()).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    pub fn repos_file(&self) -> PathBuf {
+        self.root.join("home/.local/state/git-wip/repos")
     }
 
     /// Removes `dir` from the repo list but keeps its `wip.remote`, so only one clone is watched.
     pub fn unregister(&self, dir: &Path) {
-        let file = self.root.join("home/.local/state/git-wip/repos");
         let top = self.git(dir, &["rev-parse", "--show-toplevel"]);
-        self.git(
-            &self.root,
-            &["config", "--file", file.to_str().unwrap(), "--fixed-value", "--unset-all", "wip.repo", &top],
-        );
+        let rest: String = self.repos().iter().filter(|r| **r != top).map(|r| format!("{r}\n")).collect();
+        std::fs::write(self.repos_file(), rest).unwrap();
     }
 
     /// Starts `git wip watch` as `host` with short debounce and fetch intervals; `None` uses the real clock.

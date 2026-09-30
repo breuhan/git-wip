@@ -6,7 +6,7 @@ on protected branches, and `.git` is never file-synced.
 
 A background `git wip watch` saves each machine's working state a few seconds
 after files change, as a git stash commit to `refs/wip/<host>` on a remote you
-choose, and fetches the other machines' states every 30 seconds.
+choose, and fetches the other machines' states every 60 seconds.
 
 At your next shell prompt in the repo, the newest state from another machine is
 restored, but only if this machine has no changes of its own, or the other

@@ -55,3 +55,16 @@ fn enable_works_with_read_only_global_git_config() {
     assert!(disable.status.success(), "{}", String::from_utf8_lossy(&disable.stderr));
     assert!(enable.status.success(), "{}", String::from_utf8_lossy(&enable.stderr));
 }
+
+#[test]
+fn repo_list_in_the_old_git_config_format_is_still_read() {
+    let env = Env::new();
+    let a = env.git(&env.a, &["rev-parse", "--show-toplevel"]);
+    std::fs::write(env.repos_file(), format!("[wip]\n\trepo = {a}\n")).unwrap();
+    std::fs::write(env.a.join("file.txt"), "changed\n").unwrap();
+    env.wip_ok(&env.root, "a", 100, &["save-all"]);
+    assert!(env.remote_ref("refs/wip/a").is_some());
+    env.wip_ok(&env.b, "b", 0, &["enable", "origin"]);
+    env.wip_ok(&env.a, "a", 0, &["disable"]);
+    assert_eq!(env.repos(), vec![env.git(&env.b, &["rev-parse", "--show-toplevel"])]);
+}

@@ -148,3 +148,17 @@ fn host_name_does_not_depend_on_path() {
     assert!(env.remote_ref(&format!("refs/wip/{expected}")).is_some(), "expected refs/wip/{expected}");
     assert_eq!(env.remote_ref("refs/wip/unknown"), None);
 }
+
+#[test]
+fn untracked_files_that_are_gone_or_tracked_leave_the_snapshot() {
+    let env = Env::new();
+    for name in ["u1.txt", "u2.txt", "u3.txt"] {
+        std::fs::write(env.a.join(name), "untracked\n").unwrap();
+    }
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    std::fs::remove_file(env.a.join("u1.txt")).unwrap();
+    env.git(&env.a, &["add", "u2.txt"]);
+    env.wip_ok(&env.a, "a", 200, &["save"]);
+    let oid = env.remote_ref("refs/wip/a").unwrap();
+    assert_eq!(env.git(&env.a, &["ls-tree", "-r", "--name-only", &format!("{oid}^3")]), "u3.txt");
+}

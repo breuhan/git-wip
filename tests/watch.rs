@@ -110,3 +110,34 @@ fn rewatches_a_recloned_repo() {
     std::fs::write(env.a.join("file.txt"), "after reclone\n").unwrap();
     eventually("snapshot after reclone", || snapshot_file(&env, "file.txt").as_deref() == Some("after reclone"));
 }
+
+#[test]
+fn changes_inside_a_submodule_do_not_trigger_saves() {
+    let env = Env::new();
+    env.unregister(&env.b);
+    let remote = env.remote.display().to_string();
+    env.git(&env.a, &["-c", "protocol.file.allow=always", "submodule", "--quiet", "add", &remote, "sub"]);
+    env.git(&env.a, &["commit", "-q", "-m", "add submodule"]);
+    let _watch = watching(&env, "a", None);
+    eventually("startup save", || env.remote_ref("refs/wip/a").is_some());
+    let loose = || env.git(&env.a, &["count-objects"]);
+    let before = loose();
+    std::fs::write(env.a.join("sub/inside.txt"), "in the submodule\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(loose(), before, "a change inside a submodule must not snapshot the parent repo");
+}
+
+#[test]
+fn a_failing_repo_is_logged_once() {
+    let env = Env::new();
+    env.unregister(&env.b);
+    env.git(&env.a, &["remote", "set-url", "origin", "/nonexistent/remote.git"]);
+    let watch = watching(&env, "a", Some(100));
+    std::thread::sleep(std::time::Duration::from_millis(4500));
+    let a = env.git(&env.a, &["rev-parse", "--show-toplevel"]);
+    let log = watch.log();
+    assert_eq!(log.lines().filter(|l| l.starts_with(&format!("wip: {a}: git"))).count(), 1, "{log}");
+    let remote = env.remote.display().to_string();
+    env.git(&env.a, &["remote", "set-url", "origin", &remote]);
+    eventually("recovery is logged", || watch.log().contains("working again"));
+}
