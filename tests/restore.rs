@@ -489,3 +489,31 @@ fn new_edits_after_being_seen_still_count() {
     assert!(msg.contains("both have changes"), "{msg}");
     assert_eq!(env.read(&env.a, "file.txt"), "a wip, continued\n");
 }
+
+#[test]
+fn a_restored_state_re_saved_on_a_new_head_is_not_own_work() {
+    let env = Env::new();
+    std::fs::write(env.a.join("file.txt"), "a wip\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    env.wip_ok(&env.b, "b", 110, &["restore"]);
+
+    // Both get a new commit; b's watcher re-saves the state it took from a, now on the new HEAD.
+    std::fs::write(env.a.join("other.txt"), "committed\n").unwrap();
+    env.git(&env.a, &["add", "other.txt"]);
+    env.git_at(&env.a, 120, &["commit", "-q", "-m", "other", "other.txt"]);
+    env.git(&env.a, &["push", "-q", "origin", "main"]);
+    std::fs::write(env.a.join("a2.txt"), "more from a\n").unwrap();
+    env.wip_ok(&env.a, "a", 150, &["save"]);
+    env.git(&env.b, &["pull", "-q"]);
+    env.wip_ok(&env.b, "b", 200, &["save"]);
+
+    // b's re-save is newer by the clock but holds nothing a has not got.
+    let msg = env.wip_ok(&env.a, "a", 300, &["restore"]);
+    assert!(msg.is_empty(), "{msg}");
+    assert_eq!(env.read(&env.a, "a2.txt"), "more from a\n");
+
+    // b only carries a's older state, so it follows a's newer one.
+    let msg = env.wip_ok(&env.b, "b", 300, &["restore"]);
+    assert!(msg.contains("restored state from a"), "{msg}");
+    assert_eq!(env.read(&env.b, "a2.txt"), "more from a\n");
+}

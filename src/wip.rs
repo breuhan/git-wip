@@ -315,7 +315,12 @@ fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
     // A snapshot made after seeing our own last save is newer whatever the clocks say.
     let causal =
         own_oid.as_ref().is_some_and(|o| seen_in(g, &snap).is_ok_and(|s| s.iter().any(|(h, s)| *h == me && s == o)));
-    if !causal && time <= commit_time(g, &own).max(commit_time(g, "HEAD")) {
+    // Our own save may only repeat a state we restored from another host; then it is neither
+    // our work nor any newer than that state.
+    let foreign_seen = |seen: Vec<(String, String)>| seen.into_iter().filter(|(h, _)| *h != me).map(|(_, o)| o);
+    let restored = own_oid.as_deref().and_then(|o| repeats(g, o, foreign_seen(seen(g).ok()?)));
+    let own_time = commit_time(g, restored.as_deref().unwrap_or(&own));
+    if !causal && time <= own_time.max(commit_time(g, "HEAD")) {
         return Ok(Plan::UpToDate);
     }
     // Refused before and nothing has changed since: skip the snapshot below, which would
@@ -327,17 +332,21 @@ fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
     let clean = g.run(&["status", "--porcelain", "--untracked-files=all"])?.is_empty();
     let current = snapshot(g)?;
     let unchanged = own_oid.as_deref().map_or(Ok(false), |o| same(g, o, &current))?;
-    // Replacing our state loses nothing if the tree is clean, or if it is our last save and the
-    // other host has seen that save (or it holds no changes).
-    let untouched = clean || (unchanged && seen_by_them(g, own_oid.as_deref().unwrap_or_default(), &snap)?);
+    // Replacing our state loses nothing if the tree is clean, or if it is our last save and that
+    // save is a restored state, holds no changes, or has been seen by the other host.
+    let untouched =
+        clean || (unchanged && (restored.is_some() || seen_by_them(g, own_oid.as_deref().unwrap_or_default(), &snap)?));
     let branch = snapshot_branch(g, &snap)?;
     let base = g.run(&["rev-parse", &format!("{snap}^1")])?;
     if !force && !untouched {
         let head = g.run(&["rev-parse", "HEAD"])?;
         let on_branch = g.run(&["symbolic-ref", "--short", "HEAD"])? == branch;
-        if on_branch && !has_changes(g, &snap)? {
+        // The other host has nothing of its own if its snapshot only repeats one of ours it saw.
+        let ours_it_saw = seen_in(g, &snap)?.into_iter().filter(|(h, _)| *h == me).map(|(_, o)| o);
+        let theirs_new = has_changes(g, &snap)? && repeats(g, &snap, ours_it_saw).is_none();
+        if on_branch && !theirs_new {
             if is_ancestor(g, &base, &head) {
-                return Ok(Plan::UpToDate); // we already have its commits and it has no changes
+                return Ok(Plan::UpToDate); // we already have its commits and it has nothing new
             }
             if is_ancestor(g, &head, &base) {
                 return Ok(Plan::FastForward { from, snap, branch, base });
@@ -363,17 +372,18 @@ fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
 }
 
 /// Whether `foreign` was made after seeing our own last save `own`, so replacing it loses nothing.
-/// True as well when `own` is a snapshot we restored rather than made, or holds no changes.
+/// True as well when `own` holds no changes.
 fn seen_by_them(g: &Git, own: &str, foreign: &str) -> Result<bool> {
-    if seen(g)?.iter().any(|(_, o)| o == own) || !has_changes(g, own)? {
-        return Ok(true);
-    }
     let me = host();
-    let Some((_, theirs)) = seen_in(g, foreign)?.into_iter().find(|(h, _)| *h == me) else {
-        return Ok(false);
-    };
-    // A commit or pull re-makes our snapshot on the new HEAD with the same changes, so compare those.
-    Ok(theirs == own || changes(g, &theirs).is_ok_and(|seen| Some(seen) == changes(g, own).ok()))
+    let ours_it_saw = seen_in(g, foreign)?.into_iter().filter(|(h, _)| *h == me).map(|(_, o)| o);
+    Ok(!has_changes(g, own)? || repeats(g, own, ours_it_saw).is_some())
+}
+
+/// The snapshot among `candidates` that `snap` is, or whose changes it repeats. A commit or pull
+/// re-makes a snapshot on the new HEAD: same changes, but a new id and a new time.
+fn repeats(g: &Git, snap: &str, mut candidates: impl Iterator<Item = String>) -> Option<String> {
+    let changed = changes(g, snap).ok()?;
+    candidates.find(|c| c == snap || changes(g, c).is_ok_and(|other| other == changed))
 }
 
 /// What a snapshot changes relative to its base: resulting mode, content and path of every
