@@ -52,10 +52,13 @@ impl Git {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("git: {e}"))?;
-        if let Some(data) = input {
-            child.stdin.take().unwrap().write_all(data).map_err(|e| e.to_string())?;
-        }
-        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+        // Write the input while reading the output: git may fill its output pipe before it has
+        // read everything, and then both sides would wait forever.
+        let stdin = child.stdin.take().zip(input);
+        let out = std::thread::scope(|s| {
+            s.spawn(|| stdin.map(|(mut pipe, data)| pipe.write_all(data)));
+            child.wait_with_output().map_err(|e| e.to_string())
+        })?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
         let err = format!(
             "git {}: {}",
@@ -81,5 +84,13 @@ mod tests {
             g.run(&["-c", "alias.v=!echo $GIT_WIP_TEST_VAR", "v"]).unwrap(),
             "passed"
         );
+    }
+
+    #[test]
+    fn large_input_with_large_output_does_not_deadlock() {
+        let g = Git::new(std::env::temp_dir());
+        let data = vec![b'x'; 1 << 20];
+        let out = g.run_with(&["-c", "alias.c=!cat", "c"], &[], Some(&data)).unwrap();
+        assert_eq!(out.len(), data.len());
     }
 }
