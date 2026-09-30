@@ -14,10 +14,14 @@ impl Git {
         Git { dir: dir.into(), env: vec![] }
     }
 
-    /// Sets an environment variable for every git call.
     pub fn with_env(mut self, key: &str, value: &str) -> Git {
         self.env.push((key.into(), value.into()));
         self
+    }
+
+    /// The object id of a revision, if it exists.
+    pub fn rev(&self, rev: &str) -> Option<String> {
+        self.run(&["rev-parse", "-q", "--verify", rev]).ok()
     }
 
     pub fn run(&self, args: &[&str]) -> Result<String> {
