@@ -153,6 +153,7 @@ impl Env {
             .env("GIT_WIP_HOST", host)
             .env("GIT_WIP_DEBOUNCE_MS", "300")
             .env("GIT_WIP_FETCH_SECS", "1")
+            .env("GIT_WIP_DEBUG", "1")
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();

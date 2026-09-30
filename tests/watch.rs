@@ -30,14 +30,19 @@ fn idle_rounds_write_no_objects() {
     env.unregister(&env.b);
     std::fs::write(env.a.join("file.txt"), "unsaved\n").unwrap();
     // Real clock: with fixed test dates repeated snapshots are identical objects and nothing grows.
-    let _watch = watching(&env, "a", None);
+    let watch = watching(&env, "a", None);
     eventually("startup save", || {
         snapshot_file(&env, "file.txt").as_deref() == Some("unsaved")
     });
     let loose = || env.git(&env.a, &["count-objects"]);
     let before = loose();
     std::thread::sleep(std::time::Duration::from_millis(3500));
-    assert_eq!(loose(), before, "fetch rounds must not snapshot unchanged repos");
+    assert_eq!(
+        loose(),
+        before,
+        "fetch rounds must not snapshot unchanged repos, log:\n{}",
+        watch.log()
+    );
 }
 
 #[test]

@@ -23,6 +23,8 @@ struct Repo {
 pub fn watch() -> Result<()> {
     let debounce = Duration::from_millis(setting("GIT_WIP_DEBOUNCE_MS", 2000));
     let every = Duration::from_secs(setting("GIT_WIP_FETCH_SECS", 30));
+    // Logs each file event that leads to a save.
+    let debug = std::env::var_os("GIT_WIP_DEBUG").is_some();
     // Repos to save on the next round: new to the watcher, or their last save failed (e.g. offline).
     // Saving every repo every round would write snapshot objects for nothing.
     let mut retry: HashSet<String> = HashSet::new();
@@ -95,6 +97,9 @@ pub fn watch() -> Result<()> {
                 }
                 for path in event.paths {
                     if let Some(repo) = repo_of(&watched, &path) {
+                        if debug {
+                            eprintln!("wip: debug: {:?} {}", event.kind, path.display());
+                        }
                         // Wait from the first change, so a file written constantly cannot postpone the save.
                         changed
                             .entry(repo)
