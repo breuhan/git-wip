@@ -365,8 +365,8 @@ fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
         }
         let msg = if unchanged {
             format!(
-                "{from} and {me} both have changes, run `git wip restore --force` to take {from}'s \
-                 (yours is kept in refs/wip-backup/{me})"
+                "{from} and {me} both have changes, run `git wip restore --merge` to combine them \
+                 or `git wip restore --force` to take {from}'s (yours is kept in refs/wip-backup/{me})"
             )
         } else {
             format!("{from} has newer changes, run `git wip restore --force`")
@@ -559,6 +559,142 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, prompt: bool) -> Result<
     record_seen(g, &from, &snap)?;
     eprintln!("wip: restored state from {from} (previous state in {backup})");
     Ok(())
+}
+
+/// Tree of a snapshot's working tree including its untracked files (or of a plain commit).
+fn full_tree(g: &Git, snap: &str) -> Result<String> {
+    let idx = g.path("wip-index")?;
+    let _ = std::fs::remove_file(&idx);
+    let env = [("GIT_INDEX_FILE", idx.to_str().ok_or("non-utf8 git dir")?)];
+    let build = || -> Result<String> {
+        g.run_with(&["read-tree", &format!("{snap}^{{tree}}")], &env, None)?;
+        if let Ok(files) = g.run(&["ls-tree", "-r", "-z", &format!("{snap}^3")]) {
+            g.run_with(&["update-index", "-z", "--index-info"], &env, Some(files.as_bytes()))?;
+        }
+        g.run_with(&["write-tree"], &env, None)
+    };
+    let tree = build();
+    let _ = std::fs::remove_file(&idx);
+    tree
+}
+
+/// Three-way merge of the newest foreign working state into ours, like `git merge` for
+/// uncommitted work: the ancestor is our last state the other host had seen, conflicts get
+/// markers in the files. Nothing is staged afterwards.
+pub fn merge(g: &Git, fetch_first: bool) -> Result<()> {
+    let Some(remote) = remote(g) else { return Ok(()) };
+    if busy(g)? {
+        return Err("detached HEAD or an operation in progress, not merging".into());
+    }
+    let Some(_lock) = lock(g, true)? else { return Ok(()) };
+    if fetch_first {
+        fetch(g, &remote)?;
+    }
+    let foreign = newest_foreign(g, &remote)?;
+    let Some((_, snap, from)) = foreign.filter(|(_, s, _)| !seen(g).is_ok_and(|v| v.iter().any(|(_, o)| o == s)))
+    else {
+        eprintln!("wip: nothing to merge");
+        return Ok(());
+    };
+    let me = host();
+    let subject = g.run(&["log", "-1", "--format=%s", &snap])?;
+    let branch = branch_of(&subject).ok_or(format!("unexpected snapshot message: {subject}"))?;
+    let ours = g.run(&["symbolic-ref", "--short", "HEAD"])?;
+    if branch != ours {
+        return Err(format!(
+            "{from} is on {branch}, {me} on {ours}; merging needs the same branch"
+        ));
+    }
+    let base = g.run(&["rev-parse", &format!("{snap}^1")])?;
+    let head = g.run(&["rev-parse", "HEAD"])?;
+    let behind = is_ancestor(g, &head, &base);
+    if !behind && !is_ancestor(g, &base, &head) {
+        return Err(format!(
+            "{branch} has diverged from {from}; merge or rebase the commits first"
+        ));
+    }
+    let current = snapshot(g)?;
+    let ancestor = seen_in(g, &snap)?
+        .into_iter()
+        .find(|(h, o)| *h == me && g.ok(&["cat-file", "-e", &format!("{o}^{{commit}}")]))
+        .map_or(base.clone(), |(_, o)| o);
+
+    let ours_tree = full_tree(g, &current)?;
+    let commit = |tree: &str| g.run(&["commit-tree", tree, "-m", "git wip merge"]);
+    let sides = [
+        commit(&full_tree(g, &ancestor)?)?,
+        commit(&ours_tree)?,
+        commit(&full_tree(g, &snap)?)?,
+    ];
+    let merge_base = format!("--merge-base={}", sides[0]);
+    let args = [
+        "merge-tree",
+        "--write-tree",
+        "--name-only",
+        "--no-messages",
+        &merge_base,
+        &sides[1],
+        &sides[2],
+    ];
+    let (code, out, err) = g.run_code(&args, &[], None)?;
+    let mut lines = out.lines();
+    let merged = match (code, lines.next()) {
+        (0 | 1, Some(tree)) => tree,
+        _ => return Err(err),
+    };
+    let conflicts: Vec<&str> = lines.filter(|l| !l.is_empty()).collect();
+
+    // Git would overwrite an ignored file that a file from the other host collides with, and
+    // ignored files are in no backup.
+    let added = g.run(&[
+        "diff-tree",
+        "-r",
+        "-z",
+        "--name-only",
+        "--diff-filter=A",
+        &ours_tree,
+        merged,
+    ])?;
+    let top = std::path::PathBuf::from(g.run(&["rev-parse", "--show-toplevel"])?);
+    if let Some(path) = added
+        .split('\0')
+        .find(|p| !p.is_empty() && top.join(p).symlink_metadata().is_ok())
+    {
+        return Err(format!(
+            "{path} from {from} exists here as an ignored file\nnothing was changed"
+        ));
+    }
+
+    let backup = format!("refs/wip-backup/{me}");
+    g.run(&[
+        "update-ref",
+        "--create-reflog",
+        "-m",
+        "git wip restore --merge",
+        &backup,
+        &current,
+    ])?;
+    // With everything in the index, the two-tree read-tree also removes files the merge deleted.
+    g.run(&["read-tree", &ours_tree])?;
+    g.run(&["update-index", "-q", "--refresh"])?;
+    if let Err(e) = g.run(&["read-tree", "-u", "-m", &ours_tree, merged]) {
+        let _ = g.run(&["read-tree", &format!("{current}^2")]);
+        return Err(format!("{e}\nnothing was changed"));
+    }
+    if behind {
+        g.run(&["reset", "--soft", &base])?;
+    }
+    g.run(&["reset", "-q"])?;
+    record_seen(g, &from, &snap)?;
+    if conflicts.is_empty() {
+        eprintln!("wip: merged state from {from} (previous state in {backup})");
+        return Ok(());
+    }
+    Err(format!(
+        "merged state from {from} with conflicts in: {} (in the markers yours comes first; \
+         previous state in {backup})",
+        conflicts.join(", ")
+    ))
 }
 
 /// Snapshots per host as of the last fetch, and what `restore` would do.

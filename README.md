@@ -33,8 +33,15 @@ programs.git-wip.enable = true;
 ```sh
 git wip enable <remote>    # opt a repo in, on every machine
 git wip status             # snapshot per host and whether a restore is pending
+git wip restore --merge    # both machines changed things: combine them
 git wip restore --force    # take the newest state even with local changes
 ```
+
+`--merge` is a three-way merge of the two working states, like `git merge` for
+uncommitted work: changes to different files are combined, deletions are
+applied, and conflicting edits get the usual markers (yours first). It needs
+both machines on the same branch, makes no commit, and leaves nothing staged.
+Your previous state is in `refs/wip-backup/<host>`.
 
 Everything not in `.gitignore` is pushed, so use a private remote. Snapshot
 pushes skip git hooks, so new Git LFS files in uncommitted work are not uploaded.

@@ -32,6 +32,15 @@ impl Git {
     }
 
     pub fn run_with(&self, args: &[&str], env: &[(&str, &str)], input: Option<&[u8]>) -> Result<String> {
+        match self.run_code(args, env, input)? {
+            (0, out, _) => Ok(out),
+            (_, _, err) => Err(err),
+        }
+    }
+
+    /// (exit code, stdout, error message), for commands whose exit code 1 is an answer
+    /// (merge-tree: conflicts).
+    pub fn run_code(&self, args: &[&str], env: &[(&str, &str)], input: Option<&[u8]>) -> Result<(i32, String, String)> {
         let mut child = Command::new("git")
             .current_dir(&self.dir)
             .args(args)
@@ -47,15 +56,13 @@ impl Git {
             child.stdin.take().unwrap().write_all(data).map_err(|e| e.to_string())?;
         }
         let out = child.wait_with_output().map_err(|e| e.to_string())?;
-        if out.status.success() {
-            Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
-        } else {
-            Err(format!(
-                "git {}: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))
-        }
+        let stdout = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+        let err = format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        Ok((out.status.code().unwrap_or(-1), stdout, err))
     }
 
     pub fn path(&self, git_path: &str) -> Result<PathBuf> {

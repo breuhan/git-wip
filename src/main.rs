@@ -5,7 +5,7 @@ mod wip;
 use std::process::ExitCode;
 
 const USAGE: &str =
-    "usage: git wip enable <remote> | disable | save | save-all | status | watch | restore [--force] [--no-fetch] [--prompt]";
+    "usage: git wip enable <remote> | disable | save | save-all | status | watch | restore [--merge | --force] [--no-fetch] [--prompt]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -24,6 +24,7 @@ fn main() -> ExitCode {
         ["watch"] => watch::watch(),
         // --prompt is the shell hook: no network, and skip instead of waiting while busy.
         ["restore", "--prompt"] => wip::restore(&g, false, false, true),
+        ["restore", flags @ ..] if flags.contains(&"--merge") => wip::merge(&g, !flags.contains(&"--no-fetch")),
         ["restore", flags @ ..] => wip::restore(&g, flags.contains(&"--force"), !flags.contains(&"--no-fetch"), false),
         _ => Err(USAGE.to_string()),
     };

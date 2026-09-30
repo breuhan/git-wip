@@ -76,7 +76,7 @@ fn changes_on_both_hosts_are_not_overwritten() {
     env.wip_ok(&env.b, "b", 110, &["save"]);
     let msg = env.wip_ok(&env.a, "a", 200, &["restore"]);
     assert!(
-        msg.contains("b and a both have changes, run `git wip restore --force`"),
+        msg.contains("b and a both have changes, run `git wip restore --merge`"),
         "{msg}"
     );
     assert_eq!(env.read(&env.a, "a.txt"), "only on a\n");
