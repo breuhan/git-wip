@@ -130,3 +130,35 @@ fn save_ignores_pre_push_hooks() {
     env.wip_ok(&env.a, "a", 100, &["save"]);
     assert!(env.remote_ref("refs/wip/a").is_some());
 }
+
+#[test]
+fn host_name_does_not_depend_on_path() {
+    let name = gethostname::gethostname().to_string_lossy().to_lowercase();
+    let expected = name.split('.').next().unwrap().to_string();
+    let env = Env::new();
+    std::fs::write(env.a.join("file.txt"), "changed\n").unwrap();
+    let git = std::process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let git_bin = std::path::Path::new(String::from_utf8_lossy(&git.stdout).trim())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_git-wip"))
+        .current_dir(&env.a)
+        .arg("save")
+        .env("HOME", env.root.join("home"))
+        .env("XDG_STATE_HOME", env.root.join("home/.local/state"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", git_bin)
+        .env_remove("GIT_WIP_HOST")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        env.remote_ref(&format!("refs/wip/{expected}")).is_some(),
+        "expected refs/wip/{expected}"
+    );
+    assert_eq!(env.remote_ref("refs/wip/unknown"), None);
+}

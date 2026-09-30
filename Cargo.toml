@@ -10,4 +10,8 @@ name = "git-wip"
 path = "src/main.rs"
 
 [dependencies]
+gethostname = "1.1.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
+
+[dev-dependencies]
+gethostname = "1.1.0"

@@ -14,6 +14,22 @@ fn save_all_saves_and_fetches_every_registered_repo() {
 }
 
 #[test]
+fn snapshots_deleted_on_the_remote_disappear_locally() {
+    let env = Env::new();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    env.wip_ok(&env.root, "b", 150, &["save-all"]);
+    assert!(!env
+        .git(&env.b, &["for-each-ref", "refs/wip-remotes/origin/a"])
+        .is_empty());
+    env.git(&env.a, &["push", "-q", "origin", ":refs/wip/a"]);
+    env.wip_ok(&env.root, "b", 200, &["save-all"]);
+    assert_eq!(env.git(&env.b, &["for-each-ref", "refs/wip-remotes/origin/a"]), "");
+    assert!(!env
+        .git(&env.b, &["for-each-ref", "refs/remotes/origin/main"])
+        .is_empty());
+}
+
+#[test]
 fn save_all_continues_after_a_failing_repo() {
     let env = Env::new();
     std::fs::write(env.a.join("file.txt"), "a\n").unwrap();

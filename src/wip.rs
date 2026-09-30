@@ -58,23 +58,8 @@ const BUSY: [&str; 6] = [
 
 fn host() -> String {
     std::env::var("GIT_WIP_HOST").unwrap_or_else(|_| {
-        // macOS `hostname` can follow the network (DHCP); LocalHostName is the configured name.
-        let cmd: &[&str] = if cfg!(target_os = "macos") {
-            &["scutil", "--get", "LocalHostName"]
-        } else {
-            &["hostname"]
-        };
-        let out = std::process::Command::new(cmd[0])
-            .args(&cmd[1..])
-            .output()
-            .map(|o| o.stdout)
-            .unwrap_or_default();
-        let name = String::from_utf8_lossy(&out).trim().to_lowercase();
-        name.split('.')
-            .next()
-            .filter(|n| !n.is_empty())
-            .unwrap_or("unknown")
-            .to_string()
+        let name = gethostname::gethostname().to_string_lossy().to_lowercase();
+        name.split('.').next().unwrap_or_default().to_string()
     })
 }
 
@@ -194,6 +179,8 @@ pub fn fetch(g: &Git, remote: &str) -> Result<()> {
     g.run(&[
         "fetch",
         "--quiet",
+        // Only prunes within the refspec's destination, refs/wip-remotes/<remote>/.
+        "--prune",
         remote,
         &format!("+refs/wip/*:refs/wip-remotes/{remote}/*"),
     ])
