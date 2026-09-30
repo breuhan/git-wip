@@ -487,3 +487,43 @@ fn normal_handoff_after_force() {
     assert!(msg.contains("restored state from b"), "{msg}");
     assert_eq!(env.read(&env.a, "b.txt"), "b again\n");
 }
+
+#[test]
+fn a_commit_under_unchanged_wip_does_not_count_as_new_changes() {
+    let env = Env::new();
+    std::fs::write(env.a.join("file.txt"), "a wip\n").unwrap();
+    std::fs::write(env.a.join("a.txt"), "a untracked\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    env.wip_ok(&env.b, "b", 110, &["restore"]);
+
+    // a commits something else; its WIP is the same but its snapshot is re-made on the new HEAD.
+    std::fs::write(env.a.join("other.txt"), "committed\n").unwrap();
+    env.git(&env.a, &["add", "other.txt"]);
+    env.git_at(&env.a, 120, &["commit", "-q", "-m", "other", "other.txt"]);
+    env.git(&env.a, &["push", "-q", "origin", "main"]);
+    env.wip_ok(&env.a, "a", 130, &["save"]);
+
+    env.git(&env.b, &["pull", "-q"]);
+    std::fs::write(env.b.join("b.txt"), "from b\n").unwrap();
+    env.wip_ok(&env.b, "b", 200, &["save"]);
+
+    let msg = env.wip_ok(&env.a, "a", 300, &["restore"]);
+    assert!(msg.contains("restored state from b"), "{msg}");
+    assert_eq!(env.read(&env.a, "b.txt"), "from b\n");
+    assert_eq!(env.read(&env.a, "file.txt"), "a wip\n");
+}
+
+#[test]
+fn new_edits_after_being_seen_still_count() {
+    let env = Env::new();
+    std::fs::write(env.a.join("file.txt"), "a wip\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    env.wip_ok(&env.b, "b", 110, &["restore"]);
+    std::fs::write(env.a.join("file.txt"), "a wip, continued\n").unwrap();
+    env.wip_ok(&env.a, "a", 130, &["save"]);
+    std::fs::write(env.b.join("b.txt"), "from b\n").unwrap();
+    env.wip_ok(&env.b, "b", 200, &["save"]);
+    let msg = env.wip_ok(&env.a, "a", 300, &["restore"]);
+    assert!(msg.contains("both have changes"), "{msg}");
+    assert_eq!(env.read(&env.a, "file.txt"), "a wip, continued\n");
+}

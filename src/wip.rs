@@ -397,7 +397,35 @@ fn seen_by(g: &Git, own: &str, foreign: &str) -> Result<bool> {
     if seen(g)?.iter().any(|(_, o)| o == own) || !has_changes(g, own)? {
         return Ok(true);
     }
-    Ok(seen_in(g, foreign)?.contains(&(host(), own.to_string())))
+    let me = host();
+    let Some((_, theirs)) = seen_in(g, foreign)?.into_iter().find(|(h, _)| *h == me) else {
+        return Ok(false);
+    };
+    // A commit or pull re-makes our snapshot on the new HEAD with the same changes, so compare those.
+    Ok(theirs == own || changes(g, &theirs).is_ok_and(|seen| Some(seen) == changes(g, own).ok()))
+}
+
+/// What a snapshot changes relative to its base: resulting mode, content and path of every
+/// staged and unstaged file, plus the untracked files.
+fn changes(g: &Git, snap: &str) -> Result<String> {
+    let mut out = String::new();
+    for side in ["", "^2"] {
+        let diff = g.run(&["diff-tree", "-r", &format!("{snap}^1"), &format!("{snap}{side}")])?;
+        for line in diff.lines() {
+            let (meta, path) = line.split_once('\t').unwrap_or((line, ""));
+            let f: Vec<&str> = meta.split(' ').collect();
+            out += &format!(
+                "{side} {} {} {} {path}\n",
+                f.get(1).unwrap_or(&""),
+                f.get(3).unwrap_or(&""),
+                f.get(4).unwrap_or(&"")
+            );
+        }
+    }
+    out += &g
+        .run(&["rev-parse", "-q", "--verify", &format!("{snap}^3^{{tree}}")])
+        .unwrap_or_default();
+    Ok(out)
 }
 
 /// Everything a refusal depends on: the foreign snapshot, our own snapshot, HEAD and the working
