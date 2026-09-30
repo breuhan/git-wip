@@ -9,7 +9,9 @@ after files change, as a git stash commit to `refs/wip/<host>` on a remote you
 choose, and fetches the other machines' states every 30 seconds.
 
 At your next shell prompt in the repo, the newest state from another machine is
-restored, but only if this machine has no changes of its own. If the other
+restored, but only if this machine has no changes of its own, or the other
+machine had already seen them (each snapshot records which snapshot its machine
+last restored). If both changed independently, nothing is replaced. If the other
 machine only has newer commits on your branch, the branch is fast-forwarded and
 your local changes stay, like `git pull`. The replaced state is kept in
 `refs/wip-backup/<host>`. Restores never happen in the background, so an open

@@ -63,6 +63,10 @@ fn host() -> String {
     })
 }
 
+/// The foreign snapshot this host last restored; recorded in its snapshots as `Wip-Seen`, so another
+/// host can tell whether its own last save was seen before it gets replaced.
+const SEEN: &str = "refs/wip-seen";
+
 fn own_ref() -> String {
     format!("refs/wip/{}", host())
 }
@@ -131,6 +135,9 @@ fn snapshot(g: &Git) -> Result<String> {
         args.extend(["-p".into(), u]);
     }
     args.extend(["-m".into(), format!("WIP on {branch}: {head}")]);
+    if let Ok(seen) = g.run(&["rev-parse", "-q", "--verify", SEEN]) {
+        args.extend(["-m".into(), format!("Wip-Seen: {seen}")]);
+    }
     let env: &[(&str, &str)] = if idle { &[("GIT_COMMITTER_DATE", &date)] } else { &[] };
     g.run_with(&args.iter().map(String::as_str).collect::<Vec<_>>(), env, None)
 }
@@ -294,6 +301,14 @@ fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
     let untouched = clean
         || g.run(&["rev-parse", "-q", "--verify", &own])
             .map_or(Ok(false), |o| same(g, &o, &current))?;
+    if !force && !clean && untouched && !seen_by(g, &own, &snap)? {
+        let me = host();
+        let msg = format!(
+            "{from} and {me} both have changes, run `git wip restore --force` to take {from}'s \
+             (yours is kept in refs/wip-backup/{me})"
+        );
+        return Ok(Plan::Blocked { msg, snap });
+    }
     let subject = g.run(&["log", "-1", "--format=%s", &snap])?;
     let branch = branch_of(&subject)
         .ok_or(format!("unexpected snapshot message: {subject}"))?
@@ -334,6 +349,17 @@ fn plan(g: &Git, remote: &str, force: bool) -> Result<Plan> {
         exists,
         behind,
     })
+}
+
+/// Whether `foreign` was made after seeing our own last save, so replacing ours loses nothing.
+/// True as well when our own ref is just what we restored, or holds no changes.
+fn seen_by(g: &Git, own: &str, foreign: &str) -> Result<bool> {
+    let own = g.run(&["rev-parse", own])?;
+    if g.run(&["rev-parse", "-q", "--verify", SEEN]).is_ok_and(|s| s == own) || !has_changes(g, &own)? {
+        return Ok(true);
+    }
+    let seen = g.run(&["log", "-1", "--format=%(trailers:key=Wip-Seen,valueonly)", foreign])?;
+    Ok(seen.trim() == own)
 }
 
 /// The foreign snapshot a refusal was last printed for.
@@ -411,6 +437,7 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, wait: bool) -> Result<()
             .map_err(|e| format!("{e}\nprevious state in {backup}"))?;
     }
     g.run(&["update-ref", &own_ref(), &snap])?;
+    g.run(&["update-ref", SEEN, &snap])?;
     eprintln!("wip: restored state from {from} (previous state in {backup})");
     Ok(())
 }

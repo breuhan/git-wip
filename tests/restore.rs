@@ -55,6 +55,36 @@ fn untouched_host_follows() {
 }
 
 #[test]
+fn untouched_host_follows_several_saves() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    env.wip_ok(&env.b, "b", 150, &["restore"]);
+    std::fs::write(env.b.join("file.txt"), "from b\n").unwrap();
+    env.wip_ok(&env.b, "b", 200, &["save"]);
+    std::fs::write(env.b.join("file.txt"), "from b again\n").unwrap();
+    env.wip_ok(&env.b, "b", 250, &["save"]);
+    env.wip_ok(&env.a, "a", 300, &["restore"]);
+    assert_eq!(env.read(&env.a, "file.txt"), "from b again\n");
+}
+
+#[test]
+fn changes_on_both_hosts_are_not_overwritten() {
+    let env = Env::new();
+    std::fs::write(env.a.join("a.txt"), "only on a\n").unwrap();
+    env.wip_ok(&env.a, "a", 100, &["save"]);
+    std::fs::write(env.b.join("b.txt"), "only on b\n").unwrap();
+    env.wip_ok(&env.b, "b", 110, &["save"]);
+    let msg = env.wip_ok(&env.a, "a", 200, &["restore"]);
+    assert!(
+        msg.contains("b and a both have changes, run `git wip restore --force`"),
+        "{msg}"
+    );
+    assert_eq!(env.read(&env.a, "a.txt"), "only on a\n");
+    env.wip_ok(&env.a, "a", 210, &["restore", "--force"]);
+    assert_eq!(env.read(&env.a, "b.txt"), "only on b\n");
+}
+
+#[test]
 fn restore_is_idempotent_and_does_not_ping_pong() {
     let env = Env::new();
     dirty_a_on_feature(&env);
