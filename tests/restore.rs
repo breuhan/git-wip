@@ -313,6 +313,33 @@ fn blocked_message_is_shown_once_per_snapshot() {
 }
 
 #[test]
+fn prompt_restores_once_the_refusal_is_resolved() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    env.git(
+        &env.b,
+        &["fetch", "-q", "origin", "+refs/wip/*:refs/wip-remotes/origin/*"],
+    );
+    std::fs::write(env.b.join("file.txt"), "local b\n").unwrap();
+    let refused = env.wip_ok(&env.b, "b", 200, &["restore", "--prompt"]);
+    assert!(refused.contains("a has newer changes"), "{refused}");
+    env.git(&env.b, &["checkout", "--", "file.txt"]);
+    let msg = env.wip_ok(&env.b, "b", 210, &["restore", "--prompt"]);
+    assert!(msg.contains("restored state from a"), "{msg}");
+}
+
+#[test]
+fn refusal_recorded_by_an_older_version_is_rechecked() {
+    let env = Env::new();
+    dirty_a_on_feature(&env);
+    env.wip_ok(&env.b, "b", 150, &["save-all"]);
+    let snap = env.git(&env.b, &["rev-parse", "refs/wip-remotes/origin/a"]);
+    std::fs::write(env.b.join(".git/wip-notified"), &snap).unwrap();
+    let msg = env.wip_ok(&env.b, "b", 200, &["restore", "--prompt"]);
+    assert!(msg.contains("restored state from a"), "{msg}");
+}
+
+#[test]
 fn untracked_files_hidden_by_config_count_as_changes() {
     let env = Env::new();
     dirty_a_on_feature(&env);

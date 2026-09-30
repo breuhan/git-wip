@@ -326,8 +326,9 @@ fn plan(g: &Git, remote: &str, force: bool, prompt: bool) -> Result<Plan> {
     if !causal && time <= commit_time(g, &own).max(commit_time(g, "HEAD")) {
         return Ok(Plan::UpToDate);
     }
-    if prompt && !force && notified(g)? == snap {
-        // Already reported; skip the snapshot below, which would otherwise be redone at every prompt.
+    if prompt && !force && std::fs::read_to_string(g.path("wip-refused")?).ok() == Some(refusal_key(g, &snap)?) {
+        // Refused before and nothing has changed since; skip the snapshot below, which would
+        // otherwise be redone at every prompt.
         let msg = String::new();
         return Ok(Plan::Blocked { msg, snap });
     }
@@ -399,6 +400,19 @@ fn seen_by(g: &Git, own: &str, foreign: &str) -> Result<bool> {
     Ok(seen_in(g, foreign)?.contains(&(host(), own.to_string())))
 }
 
+/// Everything a refusal depends on: the foreign snapshot, our own snapshot, HEAD and the working
+/// tree. The prompt hook re-checks as soon as any of it changes.
+fn refusal_key(g: &Git, snap: &str) -> Result<String> {
+    let own = g.run(&["rev-parse", "-q", "--verify", &own_ref()]).unwrap_or_default();
+    let head = g.run(&["rev-parse", "HEAD"])?;
+    let status = g.run(&["status", "--porcelain", "--untracked-files=all"])?;
+    Ok(format!("{snap} {own} {head}\n{status}"))
+}
+
+fn record_refusal(g: &Git, snap: &str) -> Result<()> {
+    std::fs::write(g.path("wip-refused")?, refusal_key(g, snap)?).map_err(|e| e.to_string())
+}
+
 /// The foreign snapshot a refusal was last printed for.
 fn notified(g: &Git) -> Result<String> {
     Ok(std::fs::read_to_string(g.path("wip-notified")?).unwrap_or_default())
@@ -425,6 +439,9 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, prompt: bool) -> Result<
     }
     // A manual restore always explains; the prompt hook only says it once per foreign snapshot.
     let refuse = |snap: &str, msg: &str| {
+        if !msg.is_empty() {
+            record_refusal(g, snap)?;
+        }
         if prompt {
             return notify_once(g, snap, msg);
         }
@@ -505,6 +522,7 @@ pub fn restore(g: &Git, force: bool, fetch_first: bool, prompt: bool) -> Result<
             Err(u) => format!("putting your state back failed too ({u})"),
         };
         std::fs::write(g.path("wip-notified")?, &snap).map_err(|e| e.to_string())?;
+        record_refusal(g, &snap)?;
         return Err(format!(
             "could not apply {from}'s state: {e}\n{undone}; it is also in {backup}"
         ));
