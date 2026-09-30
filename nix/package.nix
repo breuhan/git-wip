@@ -8,6 +8,9 @@ rustPlatform.buildRustPackage {
   version = "0.1.0";
   src = lib.cleanSource ../.;
   cargoLock.lockFile = ../Cargo.lock;
+  # The integration tests (git remotes, file watching, timing) run in `nix flake check` and CI,
+  # not in every build that installs the package.
+  doCheck = false;
   nativeCheckInputs = [ git ];
   meta = {
     description = "Sync uncommitted git working state between machines via refs/wip/<host>";

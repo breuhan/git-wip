@@ -73,6 +73,15 @@ pub fn watch() -> Result<()> {
             .unwrap();
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(Ok(event)) => {
+                if event.kind.is_remove() {
+                    // A deleted checkout: forget it so the next round watches a re-clone at the same path
+                    // (Linux may give the new directory the same inode, so the inode check can miss it).
+                    for path in &event.paths {
+                        if watched.remove(path).is_some() {
+                            let _ = watcher.unwatch(path);
+                        }
+                    }
+                }
                 for path in event.paths {
                     if let Some(repo) = repo_of(&watched, &path) {
                         // Wait from the first change, so a file written constantly cannot postpone the save.

@@ -17,6 +17,9 @@
       packages = forAll (pkgs: {
         default = pkgs.callPackage ./nix/package.nix { };
       });
+      checks = forAll (pkgs: {
+        tests = self.packages.${pkgs.stdenv.hostPlatform.system}.default.overrideAttrs { doCheck = true; };
+      });
       overlays.default = final: _: { git-wip = final.callPackage ./nix/package.nix { }; };
       homeManagerModules.default = import ./nix/hm-module.nix self;
       devShells = forAll (pkgs: {

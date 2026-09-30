@@ -37,7 +37,7 @@ impl Env {
         env
     }
 
-    fn envs(&self, date: i64) -> Vec<(String, String)> {
+    pub fn envs(&self, date: i64) -> Vec<(String, String)> {
         let d = format!("@{} +0000", 1_700_000_000 + date);
         vec![
             ("HOME".into(), self.root.join("home").display().to_string()),
